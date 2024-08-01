@@ -19,10 +19,7 @@
 
 #include "editor/graph/graph_node_pin.h"
 
-namespace godot
-{
-    class LineEdit;
-}
+#include <godot_cpp/classes/line_edit.hpp>
 
 /// An implementation of OrchestratorGraphNodePin for types that want to represent their default values
 /// using a string-based text field for numeric data entry.
@@ -33,23 +30,32 @@ class OrchestratorGraphNodePinNumeric : public OrchestratorGraphNodePin
     static void _bind_methods();
 
 protected:
-    OrchestratorGraphNodePinNumeric() = default;
-
-    /// Called when the default value is changed in the UI.
-    /// @param p_new_value the new default value
-    void _on_default_value_changed(const String& p_new_value);
-
-    /// Called when focus is lost on the line edit widget.
-    /// @param p_line_edit the line edit widget
-    void _on_focus_lost(LineEdit* p_line_edit);
+    LineEdit* _line_edit{ nullptr };  //! The line edit
 
     //~ Begin OrchestratorGraphNodePin Interface
     Control* _get_default_value_widget() override;
     //~ End OrchestratorGraphNodePin Interface
 
-public:
-    OrchestratorGraphNodePinNumeric(OrchestratorGraphNode* p_node, const Ref<OScriptNodePin>& p_pin);
+    /// Sets the default value.
+    /// @param p_value the new default value
+    /// @return true if the default value was set; false otherwise
+    bool _set_default_value(const String& p_value);
 
+    /// Called when the user hits "ENTER" in the line edit widget.
+    /// @param p_value the submitted value
+    void _on_text_submitted(const String& p_value);
+
+    /// Called when focus is lost on the line edit widget.
+    void _on_focus_lost();
+
+    /// Default constructor
+    OrchestratorGraphNodePinNumeric() = default;
+
+public:
+    /// Construct the numeric pin
+    /// @param p_node the graph node
+    /// @param p_pin the script pin
+    OrchestratorGraphNodePinNumeric(OrchestratorGraphNode* p_node, const Ref<OScriptNodePin>& p_pin);
 };
 
 #endif  // ORCHESTRATOR_GRAPH_NODE_PIN_NUMERIC_H

@@ -16,23 +16,23 @@
 //
 #include "constants.h"
 
+#include "api/extension_db.h"
+#include "common/property_utils.h"
 #include "common/string_utils.h"
 #include "common/variant_utils.h"
-#include "api/extension_db.h"
+#include "common/version.h"
 
 #include <godot_cpp/classes/engine.hpp>
 
 class OScriptNodeGlobalConstantInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeGlobalConstant)
-
-    StringName _constant_name;
+    Variant _value;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
-        const EnumValue& ev = ExtensionDB::get_global_enum_value(_constant_name);
-        p_context.set_output(0, ev.value);
+        p_context.set_output(0, _value);
         return 0;
     }
 };
@@ -45,7 +45,7 @@ class OScriptNodeMathConstantInstance : public OScriptNodeInstance
     double _value;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.set_output(0, _value);
         return 0;
@@ -60,7 +60,7 @@ class OScriptNodeTypeConstantInstance : public OScriptNodeInstance
     Variant _value;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.set_output(0, _value);
         return 0;
@@ -75,7 +75,7 @@ class OScriptNodeClassConstantInstance : public OScriptNodeInstance
     Variant _value;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.set_output(0, _value);
         return 0;
@@ -90,7 +90,7 @@ class OScriptNodeSingletonConstantInstance : public OScriptNodeInstance
     Variant _value;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.set_output(0, _value);
         return 0;
@@ -145,6 +145,19 @@ bool OScriptNodeGlobalConstant::_set(const StringName& p_name, const Variant& p_
     return false;
 }
 
+void OScriptNodeGlobalConstant::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - make sure pin uses new enum semantics
+        Ref<OScriptNodePin> constant = find_pin("constant", PD_Output);
+        if (constant.is_valid() && !PropertyUtils::is_class_enum(constant->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeGlobalConstant::post_initialize()
 {
     // Initially set the value from the pin
@@ -160,9 +173,14 @@ void OScriptNodeGlobalConstant::post_initialize()
 
 void OScriptNodeGlobalConstant::allocate_default_pins()
 {
-    Ref<OScriptNodePin> constant = create_pin(PD_Output, "constant", Variant::INT);
-    constant->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-    constant->set_label(_constant_name);
+    EnumInfo ei = ExtensionDB::get_global_enum_by_value(_constant_name);
+    if (ei.values.is_empty())
+    {
+        ERR_FAIL_MSG("Failed to locate enum for " + _constant_name);
+    }
+    Ref<OScriptNodePin> constant = create_pin(PD_Output, PT_Data, PropertyUtils::make_enum_class("constant", ei.name));
+    constant->set_label(_constant_name, false);
+
     super::allocate_default_pins();
 }
 
@@ -176,17 +194,33 @@ String OScriptNodeGlobalConstant::get_node_title() const
     return "Global Constant";
 }
 
+String OScriptNodeGlobalConstant::get_help_topic() const
+{
+    #if GODOT_VERSION >= 0x040300
+    return vformat("class_constant:@GlobalScope:%s", _constant_name);
+    #else
+    return super::get_help_topic();
+    #endif
+}
+
 String OScriptNodeGlobalConstant::get_icon() const
 {
     return "MemberConstant";
 }
 
-OScriptNodeInstance* OScriptNodeGlobalConstant::instantiate(OScriptInstance* p_instance)
+PackedStringArray OScriptNodeGlobalConstant::get_keywords() const
+{
+    return PackedStringArray();
+}
+
+OScriptNodeInstance* OScriptNodeGlobalConstant::instantiate()
 {
     OScriptNodeGlobalConstantInstance* i = memnew(OScriptNodeGlobalConstantInstance);
     i->_node = this;
-    i->_instance = p_instance;
-    i->_constant_name = _constant_name;
+
+    const EnumValue& ev = ExtensionDB::get_global_enum_value(_constant_name);
+    i->_value = ev.value;
+
     return i;
 }
 
@@ -196,14 +230,12 @@ void OScriptNodeGlobalConstant::initialize(const OScriptNodeInitContext& p_conte
     super::initialize(p_context);
 }
 
-bool OScriptNodeGlobalConstant::validate_node_during_build() const
+void OScriptNodeGlobalConstant::validate_node_during_build(BuildLog& p_log) const
 {
+    super::validate_node_during_build(p_log);
+
     if (_constant_name.is_empty())
-    {
-        ERR_PRINT("Constant node has no constant name specified.");
-        return false;
-    }
-    return super::validate_node_during_build();
+        p_log.error(this, "Constant node has no constant name specified.");
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -237,9 +269,8 @@ bool OScriptNodeMathConstant::_set(const StringName& p_name, const Variant& p_va
 
 void OScriptNodeMathConstant::allocate_default_pins()
 {
-    Ref<OScriptNodePin> constant = create_pin(PD_Output, "constant", Variant::FLOAT);
-    constant->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-    constant->set_label(_constant_name);
+    Ref<OScriptNodePin> constant = create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("constant", Variant::FLOAT));
+    constant->set_label(_constant_name, false);
     super::allocate_default_pins();
 }
 
@@ -253,28 +284,41 @@ String OScriptNodeMathConstant::get_node_title() const
     return "Math Constant";
 }
 
+String OScriptNodeMathConstant::get_help_topic() const
+{
+    #if GODOT_VERSION >= 0x040300
+    // todo: some math constants are not exposed to the documentation, i.e. "One"
+    //       check if these can be exposed via OScriptLanguage instead?
+    return vformat("class_constant:@GDScript:%s", _constant_name);
+    #else
+    return super::get_help_topic();
+    #endif
+}
+
 String OScriptNodeMathConstant::get_icon() const
 {
     return "MemberConstant";
 }
 
-OScriptNodeInstance* OScriptNodeMathConstant::instantiate(OScriptInstance* p_instance)
+PackedStringArray OScriptNodeMathConstant::get_keywords() const
+{
+    return ExtensionDB::get_math_constant_names();
+}
+
+OScriptNodeInstance* OScriptNodeMathConstant::instantiate()
 {
     OScriptNodeMathConstantInstance* i = memnew(OScriptNodeMathConstantInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_value = ExtensionDB::get_math_constant(_constant_name).value;
     return i;
 }
 
-bool OScriptNodeMathConstant::validate_node_during_build() const
+void OScriptNodeMathConstant::validate_node_during_build(BuildLog& p_log) const
 {
+    super::validate_node_during_build(p_log);
+
     if (_constant_name.is_empty())
-    {
-        ERR_PRINT("Constant node has no constant name specified.");
-        return false;
-    }
-    return super::validate_node_during_build();
+        p_log.error(this, "No constant name specified.");
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -352,15 +396,50 @@ void OScriptNodeTypeConstant::_bind_methods()
     }
 }
 
+void OScriptNodeTypeConstant::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - Make sure that the class enum details are encoded
+        Ref<OScriptNodePin> constant = find_pin("constant", PD_Output);
+        if (constant.is_valid() && !PropertyUtils::is_class_enum(constant->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
+PropertyInfo OScriptNodeTypeConstant::_create_pin_property_info()
+{
+    // Check whether constant is an enumeration
+    BuiltInType type = ExtensionDB::get_builtin_type(_type);
+    ERR_FAIL_COND_V_MSG(type.type != _type, PropertyInfo(), "Failed to resolve built-in type");
+
+    for (const EnumInfo& E : type.enums)
+    {
+        for (const EnumValue& V : E.values)
+        {
+            if (V.name == _constant_name)
+                return PropertyUtils::make_class_enum("constant", type.name, E.name);
+        }
+    }
+    for (const ConstantInfo& C : type.constants)
+    {
+        if (C.name == _constant_name)
+            return PropertyUtils::make_typed("constant", _type);
+    }
+
+    ERR_FAIL_V_MSG(PropertyInfo(), "Failed to find type constant " + _constant_name);
+}
+
 void OScriptNodeTypeConstant::allocate_default_pins()
 {
     String label = VariantUtils::get_friendly_type_name(_type);
     if (!_constant_name.is_empty())
         label += "::" + _constant_name;
 
-    Ref<OScriptNodePin> constant = create_pin(PD_Output, "constant", _type);
-    constant->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-    constant->set_label(label);
+    Ref<OScriptNodePin> constant = create_pin(PD_Output, PT_Data, _create_pin_property_info());
+    constant->set_label(label, false);
     super::allocate_default_pins();
 }
 
@@ -374,16 +453,24 @@ String OScriptNodeTypeConstant::get_node_title() const
     return "Type Constant";
 }
 
+String OScriptNodeTypeConstant::get_help_topic() const
+{
+    #if GODOT_VERSION >= 0x040300
+    return vformat("class_constant:%s:%s", Variant::get_type_name(_type), _constant_name);
+    #else
+    return super::get_help_topic();
+    #endif
+}
+
 String OScriptNodeTypeConstant::get_icon() const
 {
     return "MemberConstant";
 }
 
-OScriptNodeInstance* OScriptNodeTypeConstant::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeTypeConstant::instantiate()
 {
     OScriptNodeTypeConstantInstance* i = memnew(OScriptNodeTypeConstantInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_value = _type_constants[_type][_constant_name];
     return i;
 }
@@ -396,19 +483,14 @@ void OScriptNodeTypeConstant::initialize(const OScriptNodeInitContext& p_context
     super::initialize(p_context);
 }
 
-bool OScriptNodeTypeConstant::validate_node_during_build() const
+void OScriptNodeTypeConstant::validate_node_during_build(BuildLog& p_log) const
 {
+    super::validate_node_during_build(p_log);
+
     if (_constant_name.is_empty())
-    {
-        ERR_PRINT("Constant node has no constant name specified.");
-        return false;
-    }
-    if (_type == Variant::NIL)
-    {
-        ERR_PRINT("Constant node has no type specified.");
-        return false;
-    }
-    return super::validate_node_during_build();
+        p_log.error(this, "No constant name specified.");
+    else if (_type == Variant::NIL)
+        p_log.error(this, "No type specified.");
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -462,15 +544,36 @@ bool OScriptNodeClassConstantBase::_set(const StringName& p_name, const Variant&
     return false;
 }
 
+void OScriptNodeClassConstantBase::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - make sure pin uses new enum semantics
+        Ref<OScriptNodePin> constant = find_pin("constant", PD_Output);
+        if (constant.is_valid() && !PropertyUtils::is_class_enum(constant->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
+Ref<OScriptNodePin> OScriptNodeClassConstantBase::_create_constant_pin()
+{
+    const String enum_name = ClassDB::class_get_integer_constant_enum(_class_name, _constant_name);
+    if (!enum_name.is_empty())
+        return create_pin(PD_Output, PT_Data, PropertyUtils::make_class_enum("constant", _class_name, enum_name));
+
+    return create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("constant", Variant::INT));
+}
+
 void OScriptNodeClassConstantBase::allocate_default_pins()
 {
     String label = _class_name;
     if (!_constant_name.is_empty())
         label += "::" + _constant_name;
 
-    Ref<OScriptNodePin> constant = create_pin(PD_Output, "constant", Variant::INT);
-    constant->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-    constant->set_label(label);
+    _create_constant_pin()->set_label(label, false);
+
     super::allocate_default_pins();
 }
 
@@ -484,24 +587,34 @@ String OScriptNodeClassConstantBase::get_node_title() const
     return "Class Constant";
 }
 
+String OScriptNodeClassConstantBase::get_help_topic() const
+{
+    #if GODOT_VERSION >= 0x040300
+    String class_name = _class_name;
+    while (!class_name.is_empty())
+    {
+        PackedStringArray values = ClassDB::class_get_integer_constant_list(class_name, true);
+        if (values.has(_constant_name))
+            return vformat("class_constant:%s:%s", class_name, _constant_name);
+        class_name = ClassDB::get_parent_class(class_name);
+    }
+    #endif
+    return super::get_help_topic();
+}
+
 String OScriptNodeClassConstantBase::get_icon() const
 {
     return "MemberConstant";
 }
 
-bool OScriptNodeClassConstantBase::validate_node_during_build() const
+void OScriptNodeClassConstantBase::validate_node_during_build(BuildLog& p_log) const
 {
+    super::validate_node_during_build(p_log);
+
     if (_class_name.is_empty())
-    {
-        ERR_PRINT("Constant node has no class specified.");
-        return false;
-    }
-    if (_constant_name.is_empty())
-    {
-        ERR_PRINT("Constant node has no constant specified.");
-        return false;
-    }
-    return super::validate_node_during_build();
+        p_log.error(this, "No constant class name specified.");
+    else if (_constant_name.is_empty())
+        p_log.error(this, "No constant specified.");
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -516,11 +629,10 @@ PackedStringArray OScriptNodeClassConstant::_get_class_constant_choices(const St
     return ClassDB::class_get_integer_constant_list(_class_name, false);
 }
 
-OScriptNodeInstance* OScriptNodeClassConstant::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeClassConstant::instantiate()
 {
     OScriptNodeClassConstantInstance* i = memnew(OScriptNodeClassConstantInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_value = ClassDB::class_get_integer_constant(_class_name, _constant_name);
     return i;
 }
@@ -569,11 +681,10 @@ PackedStringArray OScriptNodeSingletonConstant::_get_class_names() const
     return _singletons;
 }
 
-OScriptNodeInstance* OScriptNodeSingletonConstant::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeSingletonConstant::instantiate()
 {
     OScriptNodeSingletonConstantInstance* i = memnew(OScriptNodeSingletonConstantInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_value = ClassDB::class_get_integer_constant(_class_name, _constant_name);
     return i;
 }

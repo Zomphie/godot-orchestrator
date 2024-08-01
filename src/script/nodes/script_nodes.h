@@ -50,6 +50,7 @@
 #include "functions/call_builtin_function.h"
 #include "functions/call_member_function.h"
 #include "functions/call_script_function.h"
+#include "functions/call_static_function.h"
 #include "functions/function_entry.h"
 #include "functions/function_result.h"
 #include "functions/event.h"
@@ -59,6 +60,9 @@
 
 // Math
 #include "math/operator_node.h"
+
+// Memory
+#include "memory/memory.h"
 
 // Properties
 #include "properties/property_get.h"
@@ -75,6 +79,7 @@
 
 // Signals
 #include "signals/await_signal.h"
+#include "signals/emit_member_signal.h"
 #include "signals/emit_signal.h"
 
 // Utility
@@ -88,7 +93,5 @@
 #include "variables/local_variable.h"
 #include "variables/variable_get.h"
 #include "variables/variable_set.h"
-
-void register_script_node_classes();
 
 #endif  // ORCHESTRATOR_SCRIPT_NODES_H

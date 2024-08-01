@@ -17,7 +17,7 @@
 #include "decompose.h"
 
 #include "api/extension_db.h"
-#include "common/dictionary_utils.h"
+#include "common/property_utils.h"
 #include "common/string_utils.h"
 #include "common/variant_utils.h"
 
@@ -29,7 +29,7 @@ class OScriptNodeDecomposeInstance : public OScriptNodeInstance
     Array _components;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Variant& value = p_context.get_input(0);
         for (int i = 0; i < _components.size(); i++)
@@ -78,36 +78,22 @@ void OScriptNodeDecompose::_bind_methods()
 void OScriptNodeDecompose::post_initialize()
 {
     // Clone this from the input pin
-    _type = find_pin(0, PD_Input)->get_type();
+    _type = find_pin("value", PD_Input)->get_type();
 
     super::post_initialize();
-}
-
-void OScriptNodeDecompose::post_placed_new_node()
-{
-    Variant value = VariantUtils::make_default(_type);
-
-    Ref<OScriptNodePin> input = find_pin("input");
-    if (input.is_valid() && input->get_type() != _type)
-    {
-        input->set_type(_type);
-        input->set_default_value(value);
-    }
-
-    super::post_placed_new_node();
 }
 
 void OScriptNodeDecompose::allocate_default_pins()
 {
     // Set the pin with value that will be broken
-    create_pin(PD_Input, "value", _type)->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::IGNORE_DEFAULT);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("value", _type))->set_flag(OScriptNodePin::Flags::IGNORE_DEFAULT);
 
     Variant value = VariantUtils::make_default(_type);
     const Array &components = _type_components[_type];
     for (int i = 0; i < components.size(); i++)
     {
         const Variant bit = value.get(components[i]);
-        create_pin(PD_Output, components[i], bit.get_type())->set_flags(OScriptNodePin::Flags::DATA);
+        create_pin(PD_Output, PT_Data, PropertyUtils::make_typed(components[i], bit.get_type()));
     }
 }
 
@@ -132,11 +118,24 @@ String OScriptNodeDecompose::get_icon() const
     return "Unlinked";
 }
 
-OScriptNodeInstance* OScriptNodeDecompose::instantiate(OScriptInstance* p_instance)
+String OScriptNodeDecompose::get_help_topic() const
+{
+    #if GODOT_VERSION >= 0x040300
+    return vformat("class:%s", Variant::get_type_name(_type));
+    #else
+    return vformat("%s", Variant::get_type_name(_type));
+    #endif
+}
+
+PackedStringArray OScriptNodeDecompose::get_keywords() const
+{
+    return Array::make("break", "split", "separate", "decompose", Variant::get_type_name(_type));
+}
+
+OScriptNodeInstance* OScriptNodeDecompose::instantiate()
 {
     OScriptNodeDecomposeInstance* i = memnew(OScriptNodeDecomposeInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_components = _type_components[_type];
     return i;
 }

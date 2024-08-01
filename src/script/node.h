@@ -17,11 +17,13 @@
 #ifndef ORCHESTRATOR_SCRIPT_NODE_H
 #define ORCHESTRATOR_SCRIPT_NODE_H
 
-#include "context/execution_context.h"
 #include "instances/node_instance.h"
-#include "language.h"
-#include "node_pin.h"
-#include "script.h"
+#include "orchestration/build_log.h"
+#include "script/action.h"
+#include "script/language.h"
+#include "script/graph.h"
+#include "script/node_pin.h"
+#include "script/target_object.h"
 
 #include <optional>
 
@@ -32,7 +34,7 @@
 using namespace godot;
 
 /// Forward declarations
-class OScript;
+class OScriptGraph;
 class OScriptInstance;
 
 /// A context object used to initialize OScriptNode instances.
@@ -42,19 +44,12 @@ class OScriptInstance;
 ///
 struct OScriptNodeInitContext
 {
-    // Method details
     std::optional<MethodInfo> method;
-
-    // Various property types
     std::optional<PropertyInfo> property;
     std::optional<NodePath> node_path;
-
     std::optional<StringName> class_name;
-
     std::optional<String> variable_name;
-
     std::optional<String> resource_path;
-
     std::optional<Dictionary> user_data;
 };
 
@@ -65,7 +60,9 @@ struct OScriptNodeInitContext
 ///
 class OScriptNode : public Resource
 {
-    friend class OScript;
+    friend class Orchestration;
+    friend class OScriptGraph;
+    friend class OScriptLanguage;
 
     ORCHESTRATOR_NODE_CLASS_BASE(OScriptNode, Resource);
 
@@ -83,18 +80,30 @@ public:
         EXPERIMENTAL = 1 << 3       //! Node is experimental and may change
     };
 
+    #if GODOT_VERSION >= 0x040300
+    enum BreakpointFlags
+    {
+        BREAKPOINT_NONE,
+        BREAKPOINT_ENABLED,
+        BREAKPOINT_DISABLED
+    };
+    #endif
+
 protected:
-    bool _initialized{ false };         //! Manages whether the node is initialized
-    int _id{ -1 };                      //! Unique node id, assigned by the owning script
-    Vector2 _size;                      //! Size of the node
-    Vector2 _position;                  //! Position of the node
-    BitField<ScriptNodeFlags> _flags;   //! Flags
-    Vector<Ref<OScriptNodePin>> _pins;  //! Pins
-    OScript* _script{ nullptr };        //! Owning script
-    bool _reconstructing{ false };      //! Tracks if the node is in reconstruction
+    Orchestration* _orchestration{ nullptr };  //! Owning orchestration
+    bool _initialized{ false };                //! Manages whether the node is initialized
+    int _id{ -1 };                             //! Unique node id, assigned by the owning script
+    Vector2 _size;                             //! Size of the node
+    Vector2 _position;                         //! Position of the node
+    BitField<ScriptNodeFlags> _flags;          //! Flags
+    Vector<Ref<OScriptNodePin>> _pins;         //! Pins
+    bool _reconstruction_queued{ false };      //! Tracks if node reconstruction has been queued
+    bool _reconstructing{ false };             //! Tracks if the node is in reconstruction
+    #if GODOT_VERSION >= 0x040300
+    BreakpointFlags _breakpoint_flag;          //! Transient state for breakpoints
+    #endif
 
 private:
-
     // Serialization for pins
     // Dictionaries are used to minimize the sub-resource footprint in the script file.
     TypedArray<Dictionary> _get_pin_data() const;
@@ -106,16 +115,23 @@ protected:
 
     static bool _is_in_editor();
 
+    //~ Begin Upgrade Interface
+    virtual void _upgrade(uint32_t p_version, uint32_t p_current_version) { }
+    //~ End Upgrade Interface
+
+    /// Queues the node for reconstruction at the end of the frame
+    void _queue_reconstruct();
+
 public:
     OScriptNode();
 
-    /// Get the owning Orchestrator script
-    /// @return the orchestrator script
-    OScript* get_owning_script() const { return _script; }
+    /// Get the owning orchestration
+    /// @return the orchestration
+    Orchestration* get_orchestration() const { return _orchestration; }
 
-    /// Set the script that owns this node
-    /// @param p_script the owning script
-    void set_owning_script(OScript* p_script);
+    /// Gets the owning graph
+    /// @return the owning graph
+    Ref<OScriptGraph> get_owning_graph();
 
     /// Get the node's unique identifier
     /// @return the node's unique identifer
@@ -141,6 +157,20 @@ public:
     /// @param p_position the node's position coordinates
     void set_position(const Vector2& p_position);
 
+    #if GODOT_VERSION >= 0x040300
+    /// Returns whether this node has a breakpoint, regardless if breakpoint is disabled.
+    /// @return if this node has a breakpoint
+    bool has_breakpoint() const { return _breakpoint_flag != BreakpointFlags::BREAKPOINT_NONE; }
+
+    /// Returns whether the breakpoint on this node is disabled.
+    /// @return if this node's breakpoint is disabled
+    bool has_disabled_breakpoint() const { return _breakpoint_flag == BreakpointFlags::BREAKPOINT_DISABLED; }
+
+    /// Sets the node's breakpoint flag
+    /// @param p_flag the breakpoint flag state
+    void set_breakpoint_flag(BreakpointFlags p_flag);
+    #endif
+
     /// Get the node's flags.
     /// @return flags, defaults to none.
     virtual BitField<ScriptNodeFlags> get_flags() const { return _flags; }
@@ -159,7 +189,7 @@ public:
 
     /// Get keywords that should also be matched when performing action lookups
     /// @return keywords that are additional matches beyond the node name
-    virtual String get_keywords() const { return {}; }
+    virtual PackedStringArray get_keywords() const { return {}; }
 
     /// Get all node-specific actions that will be appended to the node context menu.
     /// @param p_action_list the list of actions to append actions
@@ -282,13 +312,12 @@ public:
     virtual bool can_create_user_defined_pin(EPinDirection p_direction, String& r_message) { return false; }
 
     /// Callback to perform node validation during build step.
-    /// @return true if the node is valid, false otherwise
-    virtual bool validate_node_during_build() const { return true; }
+    /// @param p_log the build log
+    virtual void validate_node_during_build(BuildLog& p_log) const;
 
     /// Instantiate the script node's runtime instance.
-    /// @param p_instance the owning runtime script instance
     /// @return node's runtime instance
-    virtual OScriptNodeInstance* instantiate(OScriptInstance* p_instance);
+    virtual OScriptNodeInstance* instantiate();
 
     /// Initializes the node from spawner data
     /// @param p_context the initialization context
@@ -302,17 +331,19 @@ public:
     /// Resolves the target object of the specified pin
     /// @param p_pin the pin
     /// @return the resolved target object
-    virtual Object* resolve_target(const Ref<OScriptNodePin>& p_pin) const { return nullptr; }
+    virtual Ref<OScriptTargetObject> resolve_target(const Ref<OScriptNodePin>& p_pin) const { return {}; }
 
-    /// Create a pin associated with this node.
+    /// Get the help topic when viewing the node's documentation.
+    /// @return the Godot help topic
+    virtual String get_help_topic() const;
+
+    /// Create a pin based on a property.
     /// @param p_direction the pin direction, input or output
-    /// @param p_name the pin name
-    /// @param p_type the pin type, defaults to Variant::NIL
+    /// @param p_pin_type the pin type, execution or data
+    /// @param p_property the property structure
     /// @param p_default_value the default value, defaults to null
-    /// @param p_index the slot index
     /// @return the newly created pin reference
-    Ref<OScriptNodePin> create_pin(EPinDirection p_direction, const String& p_name, Variant::Type p_type = Variant::NIL,
-                                   const Variant& p_default_value = Variant(), int p_index = -1);
+    Ref<OScriptNodePin> create_pin(EPinDirection p_direction, EPinType p_pin_type, const PropertyInfo& p_property, const Variant& p_default_value = Variant());
 
     /// Find the specified pin.
     /// @param p_pin_name the pin name to locate
@@ -343,6 +374,11 @@ public:
     /// @return true if at least one pin is connected, false otherwise
     bool has_any_connections() const;
 
+    /// Get a lit of eligible autowire pins for this node
+    /// @param p_pin the pin that ie being autowired with this node
+    /// @return list of eligible autowire pins
+    virtual Vector<Ref<OScriptNodePin>> get_eligible_autowire_pins(const Ref<OScriptNodePin>& p_pin) const;
+
     /// Called when a pin connection is made.
     /// @param p_pin the pin that was connected
     virtual void on_pin_connected(const Ref<OScriptNodePin>& p_pin);
@@ -351,8 +387,11 @@ public:
     /// @param p_pin the pin that was disconnected
     virtual void on_pin_disconnected(const Ref<OScriptNodePin>& p_pin);
 
-protected:
+    /// Returns whether the node can be duplicated
+    /// @return if the node can be duplicated
+    virtual bool can_duplicate() const { return true; }
 
+protected:
     /// Notify that node pins have been changed.
     void _notify_pins_changed();
 
@@ -362,14 +401,10 @@ protected:
     // needs to be protected
     // this allows nodes that use the editable pin contract to recalculate indices
     void _cache_pin_indices();
-
 };
-
-VARIANT_BITFIELD_CAST(OScriptNode::ScriptNodeFlags);
 
 #define DECLARE_SCRIPT_NODE_INSTANCE(x) /*************************************/ \
     friend class x;                                                             \
-    x* _node = nullptr;                                                         \
-    OScriptInstance* _instance = nullptr;
+    x* _node = nullptr;
 
 #endif  // ORCHESTRATOR_SCRIPT_NODE_H

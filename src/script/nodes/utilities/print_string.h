@@ -31,6 +31,7 @@ using namespace godot;
 class OScriptNodePrintString : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodePrintString, OScriptNode);
+    static void _bind_methods() { }
 
 public:
 
@@ -40,7 +41,8 @@ public:
     String get_node_title() const override { return "Print String"; }
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override { return "MemberMethod"; }
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    void reallocate_pins_during_reconstruction(const Vector<Ref<OScriptNodePin>>& p_old_pins) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 
     OScriptNodePrintString();

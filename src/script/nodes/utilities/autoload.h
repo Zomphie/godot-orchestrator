@@ -23,6 +23,7 @@
 class OScriptNodeAutoload : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeAutoload, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     String _autoload;  //! Name of the autoload
@@ -33,6 +34,18 @@ protected:
     bool _set(const StringName &p_name, const Variant &p_value);
     //~ End Wrapped Interface
 
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
+
+    /// Get the autoload instance
+    /// @return the autoload instance
+    Variant _get_autoload_instance() const;
+
+    /// Get the autoload base class type
+    /// @return the base class type
+    String _get_autoload_base_type() const;
+
 public:
     //~ Begin OScriptNode Interface
     void allocate_default_pins() override;
@@ -41,9 +54,10 @@ public:
     String get_node_title_color_name() const override { return "variable"; }
     String get_icon() const override;
     StringName resolve_type_class(const Ref<OScriptNodePin>& p_pin) const override;
-    Object* resolve_target(const Ref<OScriptNodePin>& p_pin) const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
-    bool validate_node_during_build() const override;
+    Ref<OScriptTargetObject> resolve_target(const Ref<OScriptNodePin>& p_pin) const override;
+    OScriptNodeInstance* instantiate() override;
+    void initialize(const OScriptNodeInitContext& p_context) override;
+    void validate_node_during_build(BuildLog& p_log) const override;
     //~ End OScriptNode Interface
 };
 

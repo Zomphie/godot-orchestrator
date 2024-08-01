@@ -23,6 +23,7 @@
 class OScriptNodeResourcePath : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeResourcePath, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     String _path;  //! The resource path
@@ -35,15 +36,15 @@ protected:
 
 public:
     //~ Begin OScriptNode Interface
-    void post_initialize() override;
     void allocate_default_pins() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "resources"; }
     bool should_draw_as_bead() const override { return true; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
+    void validate_node_during_build(BuildLog& p_log) const override;
     //~ End OScriptNode Interface
 };
 

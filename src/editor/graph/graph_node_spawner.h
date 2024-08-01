@@ -48,7 +48,7 @@ protected:
 
     PropertyInfo _property;
     NodePath _node_path;
-    Vector<StringName> _target_classes;
+    PackedStringArray _target_classes;
 
 public:
     OrchestratorGraphNodeSpawnerProperty(const PropertyInfo& p_property, const NodePath& p_node_path)
@@ -56,7 +56,7 @@ public:
         , _node_path(p_node_path)
     {
     }
-    OrchestratorGraphNodeSpawnerProperty(const PropertyInfo& p_property, const Vector<StringName>& p_target_classes)
+    OrchestratorGraphNodeSpawnerProperty(const PropertyInfo& p_property, const PackedStringArray& p_target_classes)
         : _property(p_property)
         , _target_classes(p_target_classes)
     {
@@ -82,7 +82,7 @@ public:
         : OrchestratorGraphNodeSpawnerProperty(p_property, p_node_path)
     {
     }
-    OrchestratorGraphNodeSpawnerPropertyGet(const PropertyInfo& p_property, const Vector<StringName>& p_target_classes)
+    OrchestratorGraphNodeSpawnerPropertyGet(const PropertyInfo& p_property, const PackedStringArray& p_target_classes)
         : OrchestratorGraphNodeSpawnerProperty(p_property, p_target_classes)
     {
     }
@@ -111,7 +111,7 @@ public:
         : OrchestratorGraphNodeSpawnerProperty(p_property, p_node_path), _default_value(p_default_value)
     {
     }
-    OrchestratorGraphNodeSpawnerPropertySet(const PropertyInfo& p_property, const Vector<StringName>& p_target_classes)
+    OrchestratorGraphNodeSpawnerPropertySet(const PropertyInfo& p_property, const PackedStringArray& p_target_classes)
         : OrchestratorGraphNodeSpawnerProperty(p_property, p_target_classes)
     {
     }
@@ -133,10 +133,12 @@ protected:
     OrchestratorGraphNodeSpawnerCallMemberFunction() = default;
 
     MethodInfo _method;
+    StringName _class_name;
 
 public:
-    OrchestratorGraphNodeSpawnerCallMemberFunction(const MethodInfo& p_method)
+    OrchestratorGraphNodeSpawnerCallMemberFunction(const MethodInfo& p_method, const StringName& p_class_name)
         : _method(p_method)
+        , _class_name(p_class_name)
     {
     }
 
@@ -158,7 +160,7 @@ protected:
 
 public:
     OrchestratorGraphNodeSpawnerCallScriptFunction(const MethodInfo& p_method)
-        : OrchestratorGraphNodeSpawnerCallMemberFunction(p_method)
+        : OrchestratorGraphNodeSpawnerCallMemberFunction(p_method, "")
     {
     }
 
@@ -179,7 +181,29 @@ protected:
 
 public:
     OrchestratorGraphNodeSpawnerEvent(const MethodInfo& p_method)
-        : OrchestratorGraphNodeSpawnerCallMemberFunction(p_method)
+        : OrchestratorGraphNodeSpawnerCallMemberFunction(p_method, "")
+    {
+    }
+
+    //~ Begin OrchestratorGraphNodeSpawner Interface
+    void execute(OrchestratorGraphEdit* p_graph, const Vector2& p_position) override;
+    bool is_filtered(const OrchestratorGraphActionFilter& p_filter, const OrchestratorGraphActionSpec& p_spec) override;
+    //~ End OrchestratorGraphNodeSpawner Interface
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class OrchestratorGraphNodeSpawnerEmitMemberSignal : public OrchestratorGraphNodeSpawnerCallMemberFunction
+{
+    GDCLASS(OrchestratorGraphNodeSpawnerEmitMemberSignal, OrchestratorGraphNodeSpawnerCallMemberFunction);
+    static void _bind_methods() { }
+
+protected:
+    OrchestratorGraphNodeSpawnerEmitMemberSignal() = default;
+
+public:
+    OrchestratorGraphNodeSpawnerEmitMemberSignal(const MethodInfo& p_method, const StringName& p_target_class)
+        : OrchestratorGraphNodeSpawnerCallMemberFunction(p_method, p_target_class)
     {
     }
 

@@ -11,7 +11,7 @@ no other name is available.
 
 ## Project Founders
 
-    Darryl Agee
+    Darryl Agee (Zomphie)
     Chris Cranford (Naros)
 
 ## Lead Developers
@@ -20,5 +20,7 @@ no other name is available.
 
 ## Developers
 
+    Aaron Franke (aaronfranke)
+    K.S. Ernest Lee (iFire)
     Malik Enes Safak (NullMember)
     Paven Ganti (gvrocksnow)

@@ -23,6 +23,7 @@
 class OScriptNodeInputAction : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeInputAction, OScriptNode);
+    static void _bind_methods();
 
 public:
     // Various action modes
@@ -43,20 +44,24 @@ protected:
     bool _set(const StringName &p_name, const Variant &p_value);
     //~ End Wrapped Interface
 
+    /// Called when the project settings are modified.
+    void _settings_changed();
+
     PackedStringArray _get_action_names() const;
     String _get_mode() const;
-
-    static void _bind_methods();
 
 public:
 
     //~ Begin OScriptNode Interface
+    void post_initialize() override;
+    void post_placed_new_node() override;
     void allocate_default_pins() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "pure_function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
+    void validate_node_during_build(BuildLog& p_log) const override;
     //~ End OScriptNode Interface
 
 };

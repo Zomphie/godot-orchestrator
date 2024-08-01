@@ -35,14 +35,14 @@ namespace godot
 	{
 		StringName name;
 		StringName friendly_name;
-		int value;
+		int value{ 0 };
 	};
 	
 	/// Describes a definition of an Enumeration type
 	struct EnumInfo
 	{
 		StringName name;
-		bool is_bitfield;
+		bool is_bitfield{ false };
 		Vector<EnumValue> values;
 	};
 	
@@ -52,21 +52,21 @@ namespace godot
 		StringName name;
 		PropertyInfo return_val;
 		StringName category;
-		bool is_vararg;
+		bool is_vararg{ false };
 		Vector<PropertyInfo> arguments;
 	};
 	
 	/// Describes an operator for a Godot type
 	struct OperatorInfo
 	{
-		VariantOperators::Code op;
+		VariantOperators::Code op{ VariantOperators::OP_EQUAL };
 		StringName code;
 		StringName name;
-		Variant::Type left_type;
+		Variant::Type left_type{ Variant::NIL };
 		StringName left_type_name;
-		Variant::Type right_type;
+		Variant::Type right_type{ Variant::NIL };
 		StringName right_type_name;
-		Variant::Type return_type;
+		Variant::Type return_type{ Variant::NIL };
 	};
 	
 	/// Describes a constructor definition
@@ -79,7 +79,7 @@ namespace godot
 	struct ConstantInfo
 	{
 		StringName name;
-		Variant::Type type;
+		Variant::Type type{ Variant::NIL };
 		Variant value;
 	};
 	
@@ -87,16 +87,24 @@ namespace godot
 	struct BuiltInType
 	{
 		StringName name;
-		Variant::Type type;
-		bool keyed;
-		bool has_destructor;
+		Variant::Type type{ Variant::NIL };
+		bool keyed{ false };
+		bool has_destructor{ false };
 		Vector<OperatorInfo> operators;
 		Vector<ConstructorInfo> constructors;
 		Vector<MethodInfo> methods;
 		Vector<PropertyInfo> properties;
 		Vector<ConstantInfo> constants;
 		Vector<EnumInfo> enums;
-		Variant::Type index_returning_type;
+		Variant::Type index_returning_type{ Variant::NIL };
+	};
+	
+	/// Describes a Godot Class
+	struct ClassInfo
+	{
+		StringName name;
+		Vector<StringName> bitfield_enums;
+		HashMap<StringName, int64_t> static_function_hashes;
 	};
 	
 	namespace internal
@@ -115,6 +123,9 @@ namespace godot
 			
 			/// Populates Utility Functions
 			void prime_utility_functions();
+			
+			/// Populate class details
+			void prime_class_details();
 		
 		public:
 			/// Populates the ExtensionDB
@@ -143,6 +154,8 @@ namespace godot
 		PackedStringArray _function_names;
 		HashMap<StringName, FunctionInfo> _functions;
 		
+		HashMap<StringName, ClassInfo> _classes;
+		
 	public:
 		ExtensionDB();
 		~ExtensionDB();
@@ -154,6 +167,7 @@ namespace godot
 		static PackedStringArray get_global_enum_names();
 		static PackedStringArray get_global_enum_value_names();
 		static EnumInfo get_global_enum(const StringName& p_enum_name);
+		static EnumInfo get_global_enum_by_value(const StringName& p_name);
 		static EnumValue get_global_enum_value(const StringName& p_enum_value_name);
 		
 		static PackedStringArray get_math_constant_names();
@@ -161,6 +175,11 @@ namespace godot
 		
 		static PackedStringArray get_function_names();
 		static FunctionInfo get_function(const StringName& p_name);
+		
+		static bool is_class_enum_bitfield(const StringName& p_class_name, const String& p_enum_name);
+		
+		static PackedStringArray get_static_function_names(const StringName& p_class_name);
+		static int64_t get_static_function_hash(const StringName& p_class_name, const StringName& p_function_name);
 	};
 	
 }

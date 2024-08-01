@@ -17,8 +17,8 @@
 #ifndef ORCHESTRATOR_SCRIPT_NODE_PIN_H
 #define ORCHESTRATOR_SCRIPT_NODE_PIN_H
 
-#include "action.h"
 #include "common/guid.h"
+#include "script/target_object.h"
 
 #include <godot_cpp/classes/resource.hpp>
 #include <godot_cpp/templates/hash_map.hpp>
@@ -40,7 +40,21 @@ enum EPinDirection : int
     PD_MAX
 };
 
-VARIANT_ENUM_CAST(EPinDirection)
+VARIANT_ENUM_CAST(EPinDirection);
+
+/// Pin Type
+///
+/// A pin can either represent an execution or control flow where the execution of
+/// the graph is controlled by these connections, or a data pin where the pin is
+/// responsible for accepting or passing data between nodes.
+enum EPinType : int
+{
+    PT_Execution,
+    PT_Data,
+    PT_MAX
+};
+
+VARIANT_ENUM_CAST(EPinType);
 
 /// Node Pin
 ///
@@ -48,6 +62,8 @@ VARIANT_ENUM_CAST(EPinDirection)
 /// to centralize behaviors around pins and their connections.
 class OScriptNodePin : public Resource
 {
+    friend class OScriptNode;
+
     GDCLASS(OScriptNodePin, Resource);
 
 public:
@@ -71,32 +87,41 @@ public:
         SHOW_LABEL      = 1 << 9,   //! Label should be shown, always
         HIDE_LABEL      = 1 << 10,  //! Label should be hidden, always
         NO_CAPITALIZE   = 1 << 11,  //! Label is not capitalized
+        NO_AUTOWIRE     = 1 << 12,  //! Prevents being autowired
         CONST           = 1 << 20,  //! Represents a "const" data port
         REFERENCE       = 1 << 21,  //! Represents a "reference" data port
         OBJECT          = 1 << 22,  //! Refers to an object type
         FILE            = 1 << 23,  //! Should allow the user to select a file
         MULTILINE       = 1 << 24,  //! Text should be rendered using a TextEdit rather than LineEdit
         ENUM            = 1 << 25,  //! Target class holds the name of the enum
+        BITFIELD        = 1 << 26,  //! Target class holds a bitfield
     };
 
 private:
-    friend class OScriptNode;
-
-    StringName _pin_name;                      //! The pin's name, must be unique.
-    Variant::Type _type{ Variant::NIL };       //! The type associated with the pin
+    PropertyInfo _property;                    //! Pin's property details
     String _target_class;                      //! The target class associated with the pin
     Variant _default_value;                    //! The default value
     Variant _generated_default_value;          //! Generated default value
     EPinDirection _direction{ PD_Input };      //! The direction
     BitField<Flags> _flags{ 0 };               //! Pin flags
     String _label;                             //! A custom label name
-    String _file_types;                        //! File dialog types
     OScriptNode* _owning_node{ nullptr };      //! The node that owns this pin
     bool _set_type_resets_default{ false };    //! Whether changing the type resets the default value
+    bool _valid{ true };                       //! Indicates if the pin is valid
     int _cached_pin_index{ -1 };               //! Cached pin index calculated after pins added to node
 
 protected:
     static void _bind_methods();
+
+    /// Creates a pin for the specified node.
+    /// @param p_owning_node the owning node
+    /// @param p_property the property info for the pin
+    /// @return the script pin refererence
+    static Ref<OScriptNodePin> create(OScriptNode* p_owning_node, const PropertyInfo& p_property);
+
+    /// Clears a specific flag on the pin
+    /// @param p_flag the flag to clear
+    void _clear_flag(Flags p_flag);
 
     /// Loads the pin data from the provided dictionary.
     /// @param p_data the pin data
@@ -109,10 +134,6 @@ protected:
 
     Vector2 _calculate_midpoint_between_nodes(const Ref<OScriptNode>& p_source, const Ref<OScriptNode>& p_target) const;
 
-    /// Creates an intermediate node
-    /// @return the constructed intermediate node
-    Ref<OScriptNode> _create_intermediate_node(Variant::Type p_source_type, Variant::Type p_target_type) const;
-
 public:
 
     /// Perform pin post initialization
@@ -122,6 +143,10 @@ public:
     /// @param p_owning_node the node that owns this pin
     /// @return the script pin reference
     static Ref<OScriptNodePin> create(OScriptNode* p_owning_node);
+
+    /// Return whether the pin is valid
+    /// @return true if the pin is valid; false otherwise.
+    bool is_valid() const { return _valid; }
 
     /// Get the owning Orchestrator script node
     /// @return the orchestrator script node
@@ -134,6 +159,10 @@ public:
     /// Get the pin's slot index
     /// @return the slot index
     int32_t get_pin_index() const;
+
+    /// Get the pin's property info
+    /// @return an immutable property info that describes the pin
+    const PropertyInfo& get_property_info() const { return _property; }
 
     /// Get the pin's name
     /// @return the pin's name
@@ -202,13 +231,10 @@ public:
     _FORCE_INLINE_ bool is_input() const { return _direction == PD_Input; }
     _FORCE_INLINE_ bool is_output() const { return _direction == PD_Output; }
 
-    /// Get the pin flags
-    /// @return the flags
-    BitField<Flags> get_flags() const;
-
-    /// Set the pin flags
-    /// @param p_flags the pin flags
-    void set_flags(BitField<Flags> p_flags);
+    /// Set a specific flag on the pin
+    /// @param p_flag the flag to set
+    /// @deprecated use specific helper methods instead
+    void set_flag(Flags p_flag);
 
     /// Get the pin's label
     /// @return the pin's label
@@ -216,14 +242,24 @@ public:
 
     /// Set the pin's label
     /// @param p_label the label
-    void set_label(const String &p_label);
+    /// @param p_pretty_format whether the label should be formatted using the pretty algorithm
+    void set_label(const String &p_label, bool p_pretty_format = true);
+
+    /// Shows the label for the pin
+    void show_label();
+
+    /// Marks the label for the pin to be hidden
+    void hide_label();
+
+    /// Toggles pretty format of labels off
+    void no_pretty_format();
 
     /// Set the file types associated with a file pin
     /// @param p_file_types the file types
-    void set_file_types(const String &p_file_types) { _file_types = p_file_types; }
+    void set_file_types(const String &p_file_types);
 
     /// Get the file types for a file pin
-    String get_file_types() const { return _file_types; }
+    String get_file_types() const;
 
     /// Checks whether this pin can be connected with the supplied pin.
     /// @param p_pin the other pin
@@ -250,13 +286,53 @@ public:
     /// @return the connected pins
     Vector<Ref<OScriptNodePin>> get_connections() const;
 
+    /// Return whether this pin is hidden.
+    /// @return true if the pin is hidden, false otherwise
+    _FORCE_INLINE_ bool is_hidden() const { return _flags.has_flag(HIDDEN); }
+
     /// Return whether this pin acts as an execution pin.
     /// @return true if the pin is a control flow, execution pin, false otherwise
-    _FORCE_INLINE_ bool is_execution() const { return get_flags().has_flag(OScriptNodePin::Flags::EXECUTION); }
+    _FORCE_INLINE_ bool is_execution() const { return _flags.has_flag(EXECUTION); }
+
+    /// Return whether this pin acts as a file selection pin.
+    /// @return true if the pin should be rendered as a file selector
+    _FORCE_INLINE_ bool is_file() const { return _flags.has_flag(FILE); }
+
+    /// Return whether this pin acts as an enumeration
+    /// @return true if this pin is an enumeration, false otherwise
+    _FORCE_INLINE_ bool is_enum() const { return _flags.has_flag(ENUM); }
+
+    /// Return whether this pin acts as a bitfield
+    /// @return true if this pin is an enumeration, false otherwise
+    _FORCE_INLINE_ bool is_bitfield() const { return _flags.has_flag(BITFIELD); }
+
+    /// Return whether this pin is rendered as multi-lined text.
+    /// @return true if this is a multi-lined text pin, false otherwise
+    _FORCE_INLINE_ bool is_multiline_text() const { return _flags.has_flag(MULTILINE); }
+
+    /// Return whether to default field is ignored and unused (not rendered)
+    /// @return true if the default field is ignored/unused, false otherwise
+    _FORCE_INLINE_ bool is_default_ignored() const { return _flags.has_flag(IGNORE_DEFAULT); }
+
+    /// Returns whether the pin permits connections.
+    /// @return true if the pin is connectable, false otherwise
+    _FORCE_INLINE_ bool is_connectable() const { return !_flags.has_flag(NO_CONNECTION); }
+
+    /// Returns whether to render pin labels with pretty formatting
+    /// @return true to use pretty formatting, false to render labels/names as-is.
+    _FORCE_INLINE_ bool use_pretty_labels() const { return !_flags.has_flag(NO_CAPITALIZE); }
+
+    /// Return whether the pin can be autowired
+    /// @return true if the pin can be autowired, false otherwise
+    _FORCE_INLINE_ bool can_autowire() const { return !_flags.has_flag(NO_AUTOWIRE); }
+
+    /// Return whether the label is visible for this pin
+    /// @return true if the label is visible, false otherwise
+    bool is_label_visible() const;
 
     /// Attempts to resolve the target object of this pin.
     /// @return the target object of the pin or {@code nullptr} if there is no target.
-    Object* resolve_target();
+    Ref<OScriptTargetObject> resolve_target();
 };
 
 VARIANT_BITFIELD_CAST(OScriptNodePin::Flags)

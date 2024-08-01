@@ -23,15 +23,25 @@
 class OScriptNodeVariableGet : public OScriptNodeVariable
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeVariableGet, OScriptNodeVariable);
+    static void _bind_methods() { }
+
+protected:
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
+
+    //~ Begin OScriptNodeVariable Interface
+    void _variable_changed() override;
+    //~ End OScriptNodeVariable Interface
 
 public:
-    //~ Begin OScriptNodeVariable Interface
+    //~ Begin OScriptNode Interface
     void allocate_default_pins() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     bool should_draw_as_bead() const override { return true; }
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
-    //~ End OScriptNodeVariable Interface
+    OScriptNodeInstance* instantiate() override;
+    //~ End OScriptNode Interface
 };
 
 #endif  // ORCHESTRATOR_SCRIPT_NODE_VARIABLE_GET_H

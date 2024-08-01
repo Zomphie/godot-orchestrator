@@ -30,18 +30,16 @@ protected:
 
     //~ Begin OScriptNodeCallFunction Interface
     bool _has_execution_pins(const MethodInfo& p_method) const override;
-    bool _has_return_value(const MethodInfo& p_method) const override;
-    int get_argument_offset() const override { return 0; }
     //~ End OScriptNodeCallFunction Interface
 
 public:
     OScriptNodeCallBuiltinFunction();
 
     //~ Begin OScriptNode Interface
-    void post_initialize() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "pure_function_call"; }
+    String get_help_topic() const override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
 

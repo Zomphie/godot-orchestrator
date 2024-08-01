@@ -16,11 +16,13 @@
 //
 #include "dialogue_choice.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeDialogueChoiceInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeDialogueChoice)
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Dictionary dict;
         dict["text"] = p_context.get_input(0);
@@ -34,9 +36,11 @@ public:
 
 void OScriptNodeDialogueChoice::allocate_default_pins()
 {
-    create_pin(PD_Input, "text", Variant::STRING)->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::MULTILINE);
-    create_pin(PD_Input, "visible", Variant::BOOL)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "choice", Variant::OBJECT)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_multiline("text"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("visible", Variant::BOOL), true);
+
+    // todo: this outputs a dictionary but we encode this as an object, any issue here?
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_object("choice", get_class_static()));
 }
 
 String OScriptNodeDialogueChoice::get_tooltip_text() const
@@ -49,11 +53,19 @@ String OScriptNodeDialogueChoice::get_node_title() const
     return "Dialogue Choice";
 }
 
-OScriptNodeInstance* OScriptNodeDialogueChoice::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeDialogueChoice::instantiate()
 {
     OScriptNodeDialogueChoiceInstance* i = memnew(OScriptNodeDialogueChoiceInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
+}
+
+void OScriptNodeDialogueChoice::validate_node_during_build(BuildLog& p_log) const
+{
+    const Ref<OScriptNodePin> output = find_pin("choice", PD_Output);
+    if (output.is_valid() && !output->has_any_connections())
+        p_log.error(this, output, "Requires a connection.");
+
+    super::validate_node_during_build(p_log);
 }
 

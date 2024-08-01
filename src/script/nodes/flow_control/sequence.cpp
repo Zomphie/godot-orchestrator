@@ -16,6 +16,8 @@
 //
 #include "sequence.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeSequenceInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeSequence);
@@ -24,7 +26,7 @@ class OScriptNodeSequenceInstance : public OScriptNodeInstance
 public:
     int get_working_memory_size() const override { return 1; }
 
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         if (p_context.get_step_mode() == STEP_MODE_BEGIN)
             p_context.set_working_memory(0, 0);
@@ -78,11 +80,12 @@ bool OScriptNodeSequence::_set(const StringName& p_name, const Variant& p_value)
 
 void OScriptNodeSequence::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
 
     for (int i = 0; i < _steps; i++)
-        create_pin(PD_Output, _get_pin_name_given_index(i))
-            ->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
+        create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec(_get_pin_name_given_index(i)))->show_label();
+
+    super::allocate_default_pins();
 }
 
 String OScriptNodeSequence::get_tooltip_text() const
@@ -100,11 +103,10 @@ String OScriptNodeSequence::get_icon() const
     return "AnimationTrackList";
 }
 
-OScriptNodeInstance* OScriptNodeSequence::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeSequence::instantiate()
 {
     OScriptNodeSequenceInstance* i = memnew(OScriptNodeSequenceInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_steps = _steps;
     return i;
 }

@@ -18,35 +18,60 @@
 #define ORCHESTRATOR_SCENE_UTILS_H
 
 #include <godot_cpp/classes/control.hpp>
+#include <godot_cpp/classes/font.hpp>
+#include <godot_cpp/classes/margin_container.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/script.hpp>
+#include <godot_cpp/classes/style_box.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
+#include <godot_cpp/templates/vector.hpp>
 
 using namespace godot;
 
 namespace SceneUtils
 {
-    /// Load an icon.
-    ///
-    /// @attention This method inspects the provided icon name and if it is not referring to a
-    /// resource on the file system, it is assumed to refer to an icon in the "EditorIcons"
-    /// pack of the Editor.
-    ///
-    /// @param p_control the control to get the theme icon based on, typically "this".
-    /// @param p_icon_name the icon name or fully qualified file path
-    /// @return a reference to the texture or an invalid reference if the texture isn't loaded
-    Ref<Texture2D> get_icon(Control* p_control, const String& p_icon_name);
+    /// Check whether there is an editor icon with the given name.
+    /// @param p_icon_name the editor icon to check
+    /// @return true if the icon exists; false otherwise
+    bool has_editor_icon(const String& p_icon_name);
 
+    /// Get the editor theme named color
+    /// @param p_color_name the color name
+    /// @param p_category the color category, defaults to "Editor"
+    /// @return the editor color
+    Color get_editor_color(const String& p_color_name, const String& p_category = "Editor");
+
+    /// Gets an Orchestrator editor icon
+    /// @param p_name the icon name
+    /// @return a reference to the icon
+    Ref<Texture2D> get_icon(const String& p_name);
+    
     /// Load an icon.
     ///
-    /// @attention This method inspects the provided icon name and if it is not referring to a
-    /// resource on the file system, it is assumed to refer to an icon in the "EditorIcons"
-    /// pack of the Editor.
-    ///
-    /// @param p_window the window, typically "this".
-    /// @param p_icon_name the icon name or fully qualified file path
+    /// @param p_icon_name the editor icon to load
     /// @return a reference to the texture or an invalid reference if the texture isn't loaded
-    Ref<Texture2D> get_icon(Window* p_window, const String& p_icon_name);
+    Ref<Texture2D> get_editor_icon(const String& p_icon_name);
+
+    /// Gets an editor style by name
+    /// @param p_style_name the style name
+    /// @return a reference to the editor stylebox or an invalid reference if not found
+    Ref<StyleBox> get_editor_style(const String& p_style_name);
+
+    /// Get an editor font
+    /// @param p_font_name the font name
+    /// @return the font reference or an invalid reference if the font isn't found
+    Ref<Font> get_editor_font(const String& p_font_name);
+
+    /// Get an editor stylebox
+    /// @return the stylebox or an invalid reference if it wasn't found
+    Ref<StyleBox> get_editor_stylebox(const String& p_stylebox_name, const String& p_class_type);
+
+    /// Loads the class icon
+    ///
+    /// @param p_class_name the class name
+    /// @param p_fallback the fallback icon to use
+    /// @return a reference to the texture or an invalid reference if the texture isn't loaded
+    Ref<Texture2D> get_class_icon(const String& p_class_name, const String& p_fallback = "");
 
     /// Creates tooltip text that will automatically be wrapped at word boundaries and will not
     /// exceed the specified width. If text contains new lines, those will be preserved.
@@ -67,6 +92,29 @@ namespace SceneUtils
     /// @param p_node the node to find the nearest scene root for
     /// @return the nearest relative scene root to the given node
     Node* get_relative_scene_root(Node* p_node);
+
+    /// Find all nodes associated with the specified script
+    /// @param p_base the base node to start from, should not be <code>null</code>
+    /// @param p_current the current node, should not be <code>null</code>
+    /// @param p_script the script instance, should be valid
+    /// @return vector list of node instances or an empty vector if none found
+    Vector<Node*> find_all_nodes_for_script(Node* p_base, Node* p_current, const Ref<Script>& p_script);
+
+    /// Calls the @link find_all_nodes_for_script method for the specified script in the current edited scene.
+    /// @param p_script the script instance, should be valid
+    /// @return vector list of node instances or an empty vector if none found
+    Vector<Node*> find_all_nodes_for_script_in_edited_scene(const Ref<Script>& p_script);
+
+    /// Returns whether any signals of the specified <code>p_nodes</code> are linked with the specified
+    /// function or the base type.
+    /// @param p_function_name the function name
+    /// @param p_base_type the base type
+    /// @param p_nodes the vector of nodes
+    /// @return true if the function is a target of a signal; false otherwise
+    bool has_any_signals_connected_to_function(const String& p_function_name, const String& p_base_type, const Vector<Node*>& p_nodes);
+
+    // taken from VBoxContainer in the engine
+    MarginContainer* add_margin_child(Node* p_parent, const String& p_label, Control* p_control, bool p_expand = false);
 }
 
 #endif  // ORCHESTRATOR_SCENE_UTILS_H

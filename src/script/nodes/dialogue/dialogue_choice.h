@@ -23,7 +23,8 @@
 /// These can be combined into an array and evaluated by a DialogueMessage node.
 class OScriptNodeDialogueChoice : public OScriptNode
 {
-    ORCHESTRATOR_NODE_CLASS(OScriptNodeDialogueChoice, OScriptNode)
+    ORCHESTRATOR_NODE_CLASS(OScriptNodeDialogueChoice, OScriptNode);
+    static void _bind_methods() { }
 
 public:
     //~ Begin OScriptNode Interface
@@ -31,7 +32,8 @@ public:
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "dialogue"; }
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
+    void validate_node_during_build(BuildLog& p_log) const override;
     //~ End OScriptNode Interface
 };
 

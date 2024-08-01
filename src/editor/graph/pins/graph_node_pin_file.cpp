@@ -18,10 +18,10 @@
 
 #include "common/scene_utils.h"
 #include "common/string_utils.h"
+#include "editor/file_dialog.h"
 #include "script/nodes/script_nodes.h"
 
 #include <godot_cpp/classes/button.hpp>
-#include <godot_cpp/classes/file_dialog.hpp>
 
 OrchestratorGraphNodePinFile::OrchestratorGraphNodePinFile(OrchestratorGraphNode* p_node, const Ref<OScriptNodePin>& p_pin)
     : OrchestratorGraphNodePin(p_node, p_pin)
@@ -49,20 +49,20 @@ void OrchestratorGraphNodePinFile::_on_clear_file(Button* p_button)
 
 void OrchestratorGraphNodePinFile::_on_show_file_dialog(Button* p_button)
 {
-    FileDialog* dialog = memnew(FileDialog);
+    OrchestratorFileDialog* dialog = memnew(OrchestratorFileDialog);
     dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILE);
-    dialog->set_min_size(Vector2(700, 400));
-    dialog->set_initial_position(Window::WINDOW_INITIAL_POSITION_CENTER_SCREEN_WITH_MOUSE_FOCUS);
     dialog->set_hide_on_ok(true);
     dialog->set_title("Select a file");
-    if (!_pin->get_file_types().is_empty())
-        dialog->set_filters(Array::make(_pin->get_file_types()));
+
+    const String file_types = _pin->get_file_types();
+    if (!file_types.is_empty())
+        dialog->set_filters(Array::make(file_types));
 
     add_child(dialog);
 
     dialog->connect("file_selected", callable_mp(this, &OrchestratorGraphNodePinFile::_on_file_selected).bind(dialog, p_button));
     dialog->connect("canceled", callable_mp(this, &OrchestratorGraphNodePinFile::_on_file_canceled).bind(dialog, p_button));
-    dialog->show();
+    dialog->popup_file_dialog();
 }
 
 void OrchestratorGraphNodePinFile::_on_file_selected(const String& p_file_name, FileDialog* p_dialog, Button* p_button)
@@ -93,7 +93,7 @@ Control* OrchestratorGraphNodePinFile::_get_default_value_widget()
 
     _clear_button = memnew(Button);
     _clear_button->set_focus_mode(Control::FOCUS_NONE);
-    _clear_button->set_button_icon(SceneUtils::get_icon(this, "Reload"));
+    _clear_button->set_button_icon(SceneUtils::get_editor_icon("Reload"));
     _clear_button->connect("pressed", callable_mp(this, &OrchestratorGraphNodePinFile::_on_clear_file).bind(file_button));
     _clear_button->set_visible(file_button->get_text() != _get_default_text());
     container->add_child(_clear_button);

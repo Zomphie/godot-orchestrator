@@ -17,6 +17,7 @@
 #ifndef ORCHESTRATOR_GRAPH_NODE_H
 #define ORCHESTRATOR_GRAPH_NODE_H
 
+#include "common/version.h"
 #include "script/node.h"
 
 #include <godot_cpp/classes/graph_node.hpp>
@@ -40,7 +41,6 @@ class OrchestratorGraphNode : public GraphNode
 {
     GDCLASS(OrchestratorGraphNode, GraphNode);
 
-private:
     enum ContextMenuId
     {
         CM_NONE,
@@ -57,10 +57,13 @@ private:
         CM_RENAME,
         CM_TOGGLE_BREAKPOINT,
         CM_ADD_BREAKPOINT,
+        CM_ENABLE_BREAKPOINT,
+        CM_REMOVE_BREAKPOINT,
+        CM_DISABLE_BREAKPOINT,
         CM_VIEW_DOCUMENTATION,
-        #ifdef _DEBUG
-        CM_SHOW_DETAILS = 999,
-        #endif
+        CM_COLLAPSE_FUNCTION,
+        CM_EXPAND_NODE,
+        CM_RESIZABLE,
         CM_NODE_ACTION = 1000
     };
 
@@ -142,8 +145,17 @@ public:
     /// Unlinks all connections to all pins on this node
     void unlink_all();
 
+    /// Set whether node icons are shown
+    virtual void show_icons(bool p_show_icons) { }
+
     /// Get a list of nodes within this node's global rect.
     List<OrchestratorGraphNode*> get_nodes_within_global_rect();
+
+    /// Get the specified point index at the given position and direction
+    /// @param p_position the position
+    /// @param p_direction the direction
+    /// @return the point index
+    int32_t get_port_at_position(const Vector2& p_position, EPinDirection p_direction);
 
     // Group API
 
@@ -181,13 +193,28 @@ protected:
     /// Display the node's context menu
     void _show_context_menu(const Vector2& p_position);
 
+    /// Returns whether the node is considered editable
+    bool _is_editable() const;
+
     /// Is the "add-pin" button visible
     /// @return true if the add-pin is visible, otherwise false
     bool _is_add_pin_button_visible() const;
 
+    /// Adds a new option pin to the node
+    void _add_option_pin();
+
     /// Simulates the action being pressed
     /// @param p_action_name the action to simulate
     void _simulate_action_pressed(const String& p_action_name);
+
+    #if GODOT_VERSION >= 0x040300
+    /// Initializes the node's breakpoint state
+    void _initialize_node_beakpoint_state();
+
+    /// Set the breakpoint state
+    /// @param p_flag the breakpoint flag state
+    void _set_breakpoint_state(OScriptNode::BreakpointFlags p_flag);
+    #endif
 
 private:
     /// Called when the graph node is moved
@@ -217,9 +244,12 @@ private:
     /// Called when the "add-pin" button pressed
     void _on_add_pin_pressed();
 
-    /// Dispatched when a context-menu option is selected
+    /// Handles the selection of a context menu item
     /// @param p_id the selected context-menu option
-    void _on_context_menu_selection(int p_id);
+    void _handle_context_menu(int p_id);
+
+    /// Cleans up the context menu after it has closed
+    void _cleanup_context_menu();
 };
 
 #endif  // ORCHESTRATOR_GRAPH_NODE_H

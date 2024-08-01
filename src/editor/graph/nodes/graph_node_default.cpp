@@ -17,7 +17,7 @@
 #include "graph_node_default.h"
 
 #include "common/scene_utils.h"
-#include "editor/graph/factories/graph_node_pin_factory.h"
+#include "editor/graph/pins/graph_node_pin_factory.h"
 
 #include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
@@ -110,6 +110,29 @@ void OrchestratorGraphNodeDefault::_update_pins()
         _create_row_widget(row);
     }
 
+    real_t max_left_width{ 0 };
+    real_t max_right_width{ 0 };
+    for (int row_index = 0; row_index < max_rows; row_index++)
+    {
+        if (_pin_rows[row_index].left)
+            max_left_width = Math::max(_pin_rows[row_index].left->get_size().x, max_left_width);
+        if (_pin_rows[row_index].right)
+            max_right_width = Math::max(_pin_rows[row_index].right->get_size().x, max_right_width);
+    }
+    for (int row_index = 0; row_index < max_rows; row_index++)
+    {
+        if (_pin_rows[row_index].left)
+        {
+            _pin_rows[row_index].left->set_custom_minimum_size(Vector2(max_left_width, 0));
+            _pin_rows[row_index].left->set_alignment(BoxContainer::ALIGNMENT_BEGIN);
+        }
+        if (_pin_rows[row_index].right)
+        {
+            _pin_rows[row_index].right->set_custom_minimum_size(Vector2(max_right_width, 0));
+            _pin_rows[row_index].right->set_alignment(BoxContainer::ALIGNMENT_END);
+        }
+    }
+
     OrchestratorGraphNode::_update_pins();
 }
 
@@ -142,7 +165,7 @@ void OrchestratorGraphNodeDefault::_on_row_ready(int p_row_index)
     {
         const Row& row = _pin_rows[p_row_index];
 
-        const Ref<Texture2D> invalid = SceneUtils::get_icon(this, "GuiGraphNodePort");
+        const Ref<Texture2D> invalid = SceneUtils::get_editor_icon("GuiGraphNodePort");
 
         set_slot(row.index,
                  row.left && row.left->is_connectable() && !row.left->is_hidden(),
@@ -151,8 +174,8 @@ void OrchestratorGraphNodeDefault::_on_row_ready(int p_row_index)
                  row.right && row.right->is_connectable() && !row.right->is_hidden(),
                  row.right ? row.right->get_slot_type() : 0,
                  row.right ? row.right->get_color() :Color(0, 0, 0, 1),
-                 row.left ? SceneUtils::get_icon(this, row.left->get_slot_icon_name()) : invalid,
-                 row.right ? SceneUtils::get_icon(this, row.right->get_slot_icon_name()) : invalid);
+                 row.left ? SceneUtils::get_editor_icon(row.left->get_slot_icon_name()) : invalid,
+                 row.right ? SceneUtils::get_editor_icon(row.right->get_slot_icon_name()) : invalid);
     }
 }
 
@@ -176,4 +199,16 @@ OrchestratorGraphNodePin* OrchestratorGraphNodeDefault::get_output_pin(int p_por
     ERR_FAIL_COND_V_MSG(p_port < 0, nullptr, "Port must be greater-than or equal to 0.");
     ERR_FAIL_COND_V_MSG(p_port >= int(_pin_rows.size()), nullptr, "Failed to find row for slot " + itos(p_port));
     return _pin_rows[get_output_port_slot(p_port)].right;
+}
+
+void OrchestratorGraphNodeDefault::show_icons(bool p_visible)
+{
+    for (const KeyValue<int, Row>& E : _pin_rows)
+    {
+        if (E.value.left)
+            E.value.left->show_icon(p_visible);
+
+        if (E.value.right)
+            E.value.right->show_icon(p_visible);
+    }
 }

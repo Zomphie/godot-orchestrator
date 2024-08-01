@@ -59,6 +59,7 @@ INCLUDE(generate-license)
 INCLUDE(generate-version)
 INCLUDE(generate-donors)
 INCLUDE(godot-extension-db-generator)
+INCLUDE(godot-docs-generator)
 
 # Generation steps
 GENERATE_LICENSE()
@@ -66,6 +67,7 @@ GENERATE_VERSION()
 GENERATE_AUTHORS()
 GENERATE_DONORS()
 GENERATE_GODOT_EXTENSION_DB()
+GENERATE_GODOT_DOCUMENTATION()
 
 # MacOS universal binary support
 IF (APPLE)
@@ -87,6 +89,8 @@ FILE(GLOB_RECURSE gdext_sources
         CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/*.[hc]"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/*.[hc]pp"
+        # Includes the generated doc data from /doc_classes
+        "${CMAKE_BINARY_DIR}/_generated/*.cpp"
 )
 
 # GDExtension library
@@ -163,10 +167,20 @@ TARGET_LINK_LIBRARIES(${PROJECT_NAME}
         PUBLIC godot::cpp
 )
 
-IF (CMAKE_SIZEOF_VOID_P EQUAL 8)
-    SET(system_bits 64)
+SET(GDEXTENSION_LIB_PREFIX "")
+IF (NOT ANDROID)
+    IF (CMAKE_SIZEOF_VOID_P EQUAL 8)
+        SET(system_bits 64)
+    ELSE ()
+        SET(system_bits 32)
+    ENDIF ()
 ELSE ()
-    SET(system_bits 32)
+    SET(GDEXTENSION_LIB_PREFIX "lib")
+    IF (CMAKE_ANDROID_ARCH STREQUAL "arm64")
+        SET(system_bits 64)
+    ELSE ()
+        SET(system_bits 32)
+    ENDIF ()
 ENDIF ()
 
 STRING(TOLOWER "${PROJECT_NAME}.${CMAKE_SYSTEM_NAME}.${system_bits}.${CMAKE_BUILD_TYPE}" gde_lib_name)
@@ -186,7 +200,7 @@ ENDIF()
 
 SET_TARGET_PROPERTIES(${PROJECT_NAME}
         PROPERTIES
-        PREFIX ""
+        PREFIX "${GDEXTENSION_LIB_PREFIX}"
         POSITION_INDEPENDENT_CODE ON
         CMAKE_EXPORT_COMPILE_OPTIMIZATION_RELEASE ON
         CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON

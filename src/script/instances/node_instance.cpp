@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-#include "node_instance.h"
+#include "script/instances/node_instance.h"
 
 #include "script/node.h"
 
@@ -26,4 +26,29 @@ int OScriptNodeInstance::get_id()
 Ref<OScriptNode> OScriptNodeInstance::get_base_node()
 {
     return { _base };
+}
+
+OScriptNodeInstance::~OScriptNodeInstance()
+{
+    if (input_pin_count > 0)
+    {
+        if (input_pins != nullptr)
+            memdelete_arr(input_pins);
+        if (input_default_stack_pos != nullptr)
+            memdelete_arr(input_default_stack_pos);
+    }
+
+    if (output_pin_count > 0)
+    {
+        if (output_pins != nullptr)
+            memdelete_arr(output_pins);
+    }
+
+    if (execution_output_pin_count > 0)
+    {
+        if (execution_output_pins != nullptr)
+            memdelete_arr(execution_output_pins);
+        if (execution_outputs != nullptr)
+            memdelete_arr(execution_outputs);
+    }
 }

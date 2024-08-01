@@ -35,6 +35,7 @@ using namespace godot;
 class OScriptNodeProperty : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeProperty, OScriptNode);
+    static void _bind_methods();
 
 public:
     enum CallMode : uint32_t
@@ -45,11 +46,11 @@ public:
     };
 
 protected:
-    CallMode _call_mode;
+    CallMode _call_mode{ CALL_SELF };
     StringName _base_type;
-    StringName _property_name;
     NodePath _node_path;
-    Variant::Type _property_type;
+    PropertyInfo _property;
+    bool _has_property{ false };
 
     //~ Begin Wrapped Interface
     void _get_property_list(List<PropertyInfo>* r_list) const;
@@ -57,7 +58,26 @@ protected:
     bool _set(const StringName& p_name, const Variant& p_value);
     //~ End Wrapped Interface
 
-    static void _bind_methods();
+    /// Checks whether a property exists with the given name in the array
+    /// @param p_properties an array of properties
+    /// @return true if the property exists, false otherwise
+    bool _property_exists(const TypedArray<Dictionary>& p_properties) const;
+
+    /// Gets the property list for a given class name
+    /// @param p_class_name the class name
+    /// @return array of properties
+    TypedArray<Dictionary> _get_class_property_list(const String& p_class_name) const;
+
+    /// Gets the class property if found
+    /// @param p_class_name the class name
+    /// @param p_name the property name
+    /// @param r_property the returned property structure
+    /// @return true if found, false otherwise
+    bool _get_class_property(const String& p_class_name, const String& p_name, PropertyInfo& r_property);
+
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     OScriptNodeProperty();
@@ -66,7 +86,9 @@ public:
     void post_initialize() override;
     String get_icon() const override;
     String get_node_title_color_name() const override { return "properties"; }
+    String get_help_topic() const override;
     void initialize(const OScriptNodeInitContext& p_context) override;
+    void validate_node_during_build(BuildLog& p_log) const override;
     //~ End OScriptNode Interface
 };
 

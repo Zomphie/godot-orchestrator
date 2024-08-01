@@ -28,6 +28,7 @@
 class OScriptNodeDelay : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeDelay, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     float _duration{ 1 };  //! Delay duration
@@ -41,7 +42,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "flow_control"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 

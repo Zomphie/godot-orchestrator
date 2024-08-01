@@ -18,6 +18,7 @@
 
 #include "api/extension_db.h"
 #include "common/dictionary_utils.h"
+#include "common/property_utils.h"
 #include "common/string_utils.h"
 #include "common/variant_utils.h"
 
@@ -32,7 +33,7 @@ class OScriptNodeComposeInstance : public OScriptNodeInstance
     Variant::Type _target_type{ Variant::NIL };
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         if (_target_type != Variant::NIL)
         {
@@ -112,7 +113,7 @@ class OScriptNodeComposeFromInstance : public OScriptNodeInstance
         }
     }
 
-    String _get_argument_list(OScriptNodeExecutionContext& p_context) const
+    String _get_argument_list(OScriptExecutionContext& p_context) const
     {
         PackedStringArray args;
         for (int i = 0; i < _constructor_arg_types.size(); i++)
@@ -124,7 +125,7 @@ class OScriptNodeComposeFromInstance : public OScriptNodeInstance
     }
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         if (_target_type != Variant::NIL)
         {
@@ -152,6 +153,16 @@ public:
                     case Variant::STRING_NAME:
                         p_context.set_output(0, VariantUtils::cast_to<StringName>(p_context.get_input(0)));
                         break;
+                    case Variant::CALLABLE:
+                    {
+                        Object* callable_object = p_context.get_input(0);
+                        if (!callable_object)
+                            callable_object = p_context.get_owner();
+
+                        Callable c(callable_object, p_context.get_input(1));
+                        p_context.set_output(0, c);
+                        break;
+                    }
                     default:
                     {
                         const String type_name = Variant::get_type_name(_target_type);
@@ -162,16 +173,14 @@ public:
 
                         if (expression->parse(ctor_expression) != Error::OK)
                         {
-                            p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT,
-                                                "Failed to parse expression: " + ctor_expression);
+                            p_context.set_error(vformat("Failed to parse expression: %s", ctor_expression));
                             return -1 | STEP_FLAG_END;
                         }
 
                         Variant result = expression->execute();
                         if (expression->has_execute_failed())
                         {
-                            p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT,
-                                                "Failed to evaluate expression: " + ctor_expression);
+                            p_context.set_error(vformat("Failed to evaluate expression: %s", ctor_expression));
                             return -1 | STEP_FLAG_END;
                         }
 
@@ -225,17 +234,8 @@ void OScriptNodeCompose::_bind_methods()
 void OScriptNodeCompose::post_initialize()
 {
     // Clone this from the output pin
-    _type = find_pin(0, PD_Output)->get_type();
+    _type = find_pin("value", PD_Output)->get_type();
     super::post_initialize();
-}
-
-void OScriptNodeCompose::post_placed_new_node()
-{
-    Ref<OScriptNodePin> output = find_pin("output");
-    if (output.is_valid() && output->get_type() != _type)
-        output->set_type(_type);
-
-    super::post_placed_new_node();
 }
 
 void OScriptNodeCompose::allocate_default_pins()
@@ -246,11 +246,11 @@ void OScriptNodeCompose::allocate_default_pins()
     for (int i = 0; i < components.size(); i++)
     {
         const Variant bit = default_value.get(components[i]);
-        create_pin(PD_Input, components[i], bit.get_type())->set_flags(OScriptNodePin::Flags::DATA);
+        create_pin(PD_Input, PT_Data, PropertyUtils::make_typed(components[i], bit.get_type()));
     }
 
     // This is the pin that will be constructed from its types
-    create_pin(PD_Output, "value", _type)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("value", _type));
 }
 
 String OScriptNodeCompose::get_tooltip_text() const
@@ -274,11 +274,10 @@ String OScriptNodeCompose::get_icon() const
     return "Instance";
 }
 
-OScriptNodeInstance* OScriptNodeCompose::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeCompose::instantiate()
 {
     OScriptNodeComposeInstance* i = memnew(OScriptNodeComposeInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_target_type = _type;
     i->_components = _type_components[_type];
     return i;
@@ -331,7 +330,7 @@ void OScriptNodeComposeFrom::_bind_methods()
 void OScriptNodeComposeFrom::post_initialize()
 {
     // Clone this from the output pin
-    _type = find_pin(0, PD_Output)->get_type();
+    _type = find_pin("value", PD_Output)->get_type();
 
     for (const Ref<OScriptNodePin>& pin : find_pins(PD_Input))
     {
@@ -342,28 +341,19 @@ void OScriptNodeComposeFrom::post_initialize()
     super::post_initialize();
 }
 
-void OScriptNodeComposeFrom::post_placed_new_node()
-{
-    Ref<OScriptNodePin> output = find_pin("output");
-    if (output.is_valid() && output->get_type() != _type)
-        output->set_type(_type);
-
-    super::post_placed_new_node();
-}
-
 void OScriptNodeComposeFrom::allocate_default_pins()
 {
     for (int i = 0; i < _constructor_args.size(); i++)
     {
         const PropertyInfo& property = _constructor_args[i];
-        if (!property.name.is_empty())
-            create_pin(PD_Input, property.name, property.type)->set_flags(OScriptNodePin::Flags::DATA);
+        if (property.name.is_empty())
+            create_pin(PD_Input, PT_Data, PropertyUtils::as("arg" + itos(i), property));
         else
-            create_pin(PD_Input, "arg" + itos(i), property.type)->set_flags(OScriptNodePin::Flags::DATA);
+            create_pin(PD_Input, PT_Data, property);
     }
 
     // This is the pin that will be constructed from its types
-    create_pin(PD_Output, "value", _type)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("value", _type));
 }
 
 String OScriptNodeComposeFrom::get_tooltip_text() const
@@ -392,11 +382,24 @@ String OScriptNodeComposeFrom::get_icon() const
     return "Instance";
 }
 
-OScriptNodeInstance* OScriptNodeComposeFrom::instantiate(OScriptInstance* p_instance)
+String OScriptNodeComposeFrom::get_help_topic() const
+{
+    #if GODOT_VERSION >= 0x040300
+    return vformat("class:%s", Variant::get_type_name(_type));
+    #else
+    return vformat("%s", Variant::get_type_name(_type));
+    #endif
+}
+
+PackedStringArray OScriptNodeComposeFrom::get_keywords() const
+{
+    return Array::make("combine", "compose", "create", "make", Variant::get_type_name(_type));
+}
+
+OScriptNodeInstance* OScriptNodeComposeFrom::instantiate()
 {
     OScriptNodeComposeFromInstance* i = memnew(OScriptNodeComposeFromInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_target_type = _type;
 
     Vector<Variant::Type> arg_types;

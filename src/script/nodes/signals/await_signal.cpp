@@ -16,6 +16,9 @@
 //
 #include "await_signal.h"
 
+#include "common/property_utils.h"
+#include "script/vm/script_state.h"
+
 class OScriptNodeAwaitSignalInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeAwaitSignal);
@@ -23,7 +26,7 @@ class OScriptNodeAwaitSignalInstance : public OScriptNodeInstance
 public:
     int get_working_memory_size() const override { return 1; }
 
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         // Check whether the signal was raised and we should resume.
         if (p_context.get_step_mode() == STEP_MODE_RESUME)
@@ -32,14 +35,13 @@ public:
         // Get the target, falling back to self when not specified.
         Object* target = p_context.get_input(0);
         if (!target)
-            target = _instance->get_owner();
+            target = p_context.get_owner();
 
 
         const String signal_name = p_context.get_input(1);
         if (!target->has_signal(signal_name))
         {
-            p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT, "No signal defined on target.");
-            p_context.set_invalid_argument(this, 1, Variant::STRING_NAME, Variant::STRING_NAME);
+            p_context.set_error(vformat("No signal '%s' defined on target object.", signal_name));
             return -1;
         }
 
@@ -54,22 +56,12 @@ public:
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void OScriptNodeAwaitSignal::post_initialize()
-{
-    super::post_initialize();
-}
-
-void OScriptNodeAwaitSignal::post_placed_new_node()
-{
-    super::post_placed_new_node();
-}
-
 void OScriptNodeAwaitSignal::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Input, "target", Variant::OBJECT)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "signal_name", Variant::STRING)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_object("target"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("signal_name", Variant::STRING));
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
     super::allocate_default_pins();
 }
 
@@ -83,15 +75,16 @@ String OScriptNodeAwaitSignal::get_node_title() const
     return "Await Signal";
 }
 
-bool OScriptNodeAwaitSignal::validate_node_during_build() const
-{
-    return super::validate_node_during_build();
-}
-
-OScriptNodeInstance* OScriptNodeAwaitSignal::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeAwaitSignal::instantiate()
 {
     OScriptNodeAwaitSignalInstance* i = memnew(OScriptNodeAwaitSignalInstance);
-    i->_instance = p_instance;
     i->_node = this;
     return i;
+}
+
+void OScriptNodeAwaitSignal::validate_node_during_build(BuildLog& p_log) const
+{
+    // todo: need to validate signal exists on target object instance
+
+    return super::validate_node_during_build(p_log);
 }

@@ -16,6 +16,7 @@
 //
 #include "arrays.h"
 
+#include "common/property_utils.h"
 #include "common/variant_utils.h"
 
 class OScriptNodeMakeArrayInstance : public OScriptNodeInstance
@@ -24,7 +25,7 @@ class OScriptNodeMakeArrayInstance : public OScriptNodeInstance
     int _count{ 0 };
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Array result;
         for (int i = 0; i < _count; i++)
@@ -45,21 +46,23 @@ class OScriptNodeArrayGetInstance : public OScriptNodeInstance
     Variant::Type _index_type;
 
     template<typename T>
-    int _step_internal(OScriptNodeExecutionContext& p_context)
+    int _step_internal(OScriptExecutionContext& p_context)
     {
         T array = p_context.get_input(0);
         int index = p_context.get_input(1);
 
-        if (array.size() > index)
-            p_context.set_output(0, array[index]);
-        else
-            p_context.set_output(0, Variant());
+        if (array.size() <= index)
+        {
+            p_context.set_error(vformat("Out of bounds get index '%d' (on base '%s')", index, "Array"));
+            return -1;
+        }
 
+        p_context.set_output(0, array[index]);
         return 0;
     }
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         switch (_collection_type)
         {
@@ -84,8 +87,7 @@ public:
             case Variant::PACKED_COLOR_ARRAY:
                 return _step_internal<PackedColorArray>(p_context);
             default:
-                p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT,
-                    "The collection type " + itos(_collection_type) + " is not supported.");
+                p_context.set_type_unexpected_type_error(0, _collection_type);
             return -1;
         }
     }
@@ -100,15 +102,8 @@ class OScriptNodeArraySetInstance : public OScriptNodeInstance
     Variant::Type _collection_type;
     Variant::Type _index_type;
 
-    int _invalid_index(OScriptNodeExecutionContext& p_context, int p_index)
-    {
-        p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT,
-            "Size is too small to index at index " + itos(p_index));
-        return -1;
-    }
-
     template<typename T>
-    int _step_internal(OScriptNodeExecutionContext& p_context)
+    int _step_internal(OScriptExecutionContext& p_context)
     {
         T array = p_context.get_input(0);
         int index = p_context.get_input(1);
@@ -118,8 +113,7 @@ class OScriptNodeArraySetInstance : public OScriptNodeInstance
         const int size = array.size();
         if (size <= index && !size_to_fit)
         {
-            p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT,
-                "Collection size is too small to insert at index " + itos(index));
+            p_context.set_error(vformat("Invalid assignment of index '%d' (on base: '%s') with value of type '%s'", index, "Array", Variant::get_type_name(item.get_type())));
             return -1;
         }
         else if (size <= index)
@@ -133,7 +127,7 @@ class OScriptNodeArraySetInstance : public OScriptNodeInstance
     }
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         switch (_collection_type)
         {
@@ -158,8 +152,7 @@ public:
             case Variant::PACKED_COLOR_ARRAY:
                 return _step_internal<PackedColorArray>(p_context);
             default:
-                p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT,
-                    "The collection type " + itos(_collection_type) + " is not supported.");
+                p_context.set_type_unexpected_type_error(0, _collection_type);
                 return -1;
         }
     }
@@ -172,7 +165,7 @@ class OScriptNodeArrayFindInstance : public OScriptNodeInstance
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeArrayFind)
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Array target_array = p_context.get_input(0);
         Variant item = p_context.get_input(1);
@@ -191,7 +184,7 @@ class OScriptNodeArrayClearInstance : public OScriptNodeInstance
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeArrayClear)
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Array target_array = p_context.get_input(0);
         target_array.clear();
@@ -208,7 +201,7 @@ class OScriptNodeArrayAppendInstance : public OScriptNodeInstance
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeArrayAppend)
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Array target_array = p_context.get_input(0);
         Array source_array = p_context.get_input(1);
@@ -227,7 +220,7 @@ class OScriptNodeArrayAddElementInstance : public OScriptNodeInstance
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeArrayAddElement)
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Array target_array = p_context.get_input(0);
         Variant item = p_context.get_input(1);
@@ -249,7 +242,7 @@ class OScriptNodeArrayRemoveElementInstance : public OScriptNodeInstance
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeArrayRemoveElement)
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Array target_array = p_context.get_input(0);
         Variant item = p_context.get_input(1);
@@ -279,7 +272,7 @@ class OScriptNodeArrayRemoveIndexInstance : public OScriptNodeInstance
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeArrayRemoveIndex)
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Array target_array = p_context.get_input(0);
         int index = p_context.get_input(1);
@@ -294,6 +287,21 @@ public:
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeMakeArray::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup pins - make sure variant is encoded into pins
+        if (_element_count > 0)
+        {
+            const Ref<OScriptNodePin> first = find_pin(_get_pin_name_given_index(0), PD_Input);
+            if (first.is_valid() && PropertyUtils::is_nil_no_variant(first->get_property_info()))
+                reconstruct_node();
+        }
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
 
 void OScriptNodeMakeArray::post_initialize()
 {
@@ -304,13 +312,9 @@ void OScriptNodeMakeArray::post_initialize()
 void OScriptNodeMakeArray::allocate_default_pins()
 {
     for (int i = 0; i < _element_count; i++)
-    {
-        Ref<OScriptNodePin> pin = create_pin(PD_Input, _get_pin_name_given_index(i), Variant::NIL);
-        pin->set_flags(OScriptNodePin::Flags::DATA);
-        pin->set_label(vformat("[%d]", i));
-    }
+        create_pin(PD_Input, PT_Data, PropertyUtils::make_variant(_get_pin_name_given_index(i)))->set_label(vformat("[%d]", i));
 
-    create_pin(PD_Output, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
 
     super::allocate_default_pins();
 }
@@ -335,11 +339,10 @@ void OScriptNodeMakeArray::pin_default_value_changed(const Ref<OScriptNodePin>& 
 
 }
 
-OScriptNodeInstance* OScriptNodeMakeArray::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeMakeArray::instantiate()
 {
     OScriptNodeMakeArrayInstance* i = memnew(OScriptNodeMakeArrayInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_count = _element_count;
     return i;
 }
@@ -373,6 +376,18 @@ void OScriptNodeMakeArray::remove_dynamic_pin(const Ref<OScriptNodePin>& p_pin)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeArrayGet::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        const Ref<OScriptNodePin> element = find_pin("element", PD_Output);
+        if (element.is_valid() && PropertyUtils::is_nil_no_variant(element->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeArrayGet::post_initialize()
 {
     _collection_type = find_pin("array", PD_Input)->get_type();
@@ -386,9 +401,9 @@ void OScriptNodeArrayGet::allocate_default_pins()
 {
     _collection_name = Variant::get_type_name(_collection_type);
 
-    create_pin(PD_Input, "array", _collection_type)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "index", Variant::INT)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "element", _index_type)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("array", _collection_type));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("index", Variant::INT));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("element", _index_type, true));
 
     super::allocate_default_pins();
 }
@@ -408,11 +423,10 @@ String OScriptNodeArrayGet::get_icon() const
     return "FileThumbnail";
 }
 
-OScriptNodeInstance* OScriptNodeArrayGet::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeArrayGet::instantiate()
 {
     OScriptNodeArrayGetInstance* i = memnew(OScriptNodeArrayGetInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_collection_type = _collection_type;
     i->_index_type = _index_type;
     return i;
@@ -431,6 +445,18 @@ void OScriptNodeArrayGet::initialize(const OScriptNodeInitContext& p_context)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeArraySet::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        const Ref<OScriptNodePin> element = find_pin("element", PD_Input);
+        if (element.is_valid() && PropertyUtils::is_nil_no_variant(element->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeArraySet::post_initialize()
 {
     _collection_type = find_pin("array", PD_Input)->get_type();
@@ -444,14 +470,14 @@ void OScriptNodeArraySet::allocate_default_pins()
 {
     _collection_name = Variant::get_type_name(_collection_type);
 
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Input, "array", _collection_type)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "index", Variant::INT)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "element", _index_type)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "size_to_fit", Variant::BOOL)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("array", _collection_type));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("index", Variant::INT));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("element", _index_type, true));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("size_to_fit", Variant::BOOL));
 
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Output, "result", _collection_type)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("result", _collection_type));
 
     super::allocate_default_pins();
 }
@@ -471,11 +497,10 @@ String OScriptNodeArraySet::get_icon() const
     return "FileThumbnail";
 }
 
-OScriptNodeInstance* OScriptNodeArraySet::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeArraySet::instantiate()
 {
     OScriptNodeArraySetInstance* i = memnew(OScriptNodeArraySetInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_collection_type = _collection_type;
     i->_index_type = _index_type;
     return i;
@@ -494,13 +519,26 @@ void OScriptNodeArraySet::initialize(const OScriptNodeInitContext& p_context)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeArrayFind::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - make sure if item is nil, variant is encoded
+        const Ref<OScriptNodePin> item = find_pin("input", PD_Input);
+        if (item.is_valid() && PropertyUtils::is_nil_no_variant(item->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeArrayFind::allocate_default_pins()
 {
-    create_pin(PD_Input, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "item", Variant::NIL)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_variant("item"));
 
-    create_pin(PD_Output, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "index", Variant::INT)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("index", Variant::INT));
 
     super::allocate_default_pins();
 }
@@ -520,11 +558,10 @@ String OScriptNodeArrayFind::get_icon() const
     return "FileThumbnail";
 }
 
-OScriptNodeInstance* OScriptNodeArrayFind::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeArrayFind::instantiate()
 {
     OScriptNodeArrayFindInstance* i = memnew(OScriptNodeArrayFindInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 
@@ -532,11 +569,11 @@ OScriptNodeInstance* OScriptNodeArrayFind::instantiate(OScriptInstance* p_instan
 
 void OScriptNodeArrayClear::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Input, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
 
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Output, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
 
     super::allocate_default_pins();
 }
@@ -556,11 +593,10 @@ String OScriptNodeArrayClear::get_icon() const
     return "FileThumbnail";
 }
 
-OScriptNodeInstance* OScriptNodeArrayClear::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeArrayClear::instantiate()
 {
     OScriptNodeArrayClearInstance* i = memnew(OScriptNodeArrayClearInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 
@@ -568,17 +604,12 @@ OScriptNodeInstance* OScriptNodeArrayClear::instantiate(OScriptInstance* p_insta
 
 void OScriptNodeArrayAppend::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    Ref<OScriptNodePin> target = create_pin(PD_Input, "target_array", Variant::ARRAY);
-    target->set_flags(OScriptNodePin::Flags::DATA);
-    target->set_label("Target");
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("target_array", Variant::ARRAY))->set_label("Target");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("source_array", Variant::ARRAY))->set_label("Source");
 
-    Ref<OScriptNodePin> source = create_pin(PD_Input, "source_array", Variant::ARRAY);
-    source->set_flags(OScriptNodePin::Flags::DATA);
-    source->set_label("Source");
-
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Output, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
 
     super::allocate_default_pins();
 }
@@ -598,28 +629,37 @@ String OScriptNodeArrayAppend::get_icon() const
     return "FileThumbnail";
 }
 
-OScriptNodeInstance* OScriptNodeArrayAppend::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeArrayAppend::instantiate()
 {
     OScriptNodeArrayAppendInstance* i = memnew(OScriptNodeArrayAppendInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeArrayAddElement::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - make sure variant is encoded into nil pin
+        const Ref<OScriptNodePin> element = find_pin("element", PD_Input);
+        if (element.is_valid() && PropertyUtils::is_nil_no_variant(element->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeArrayAddElement::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    Ref<OScriptNodePin> target = create_pin(PD_Input, "target_array", Variant::ARRAY);
-    target->set_flags(OScriptNodePin::Flags::DATA);
-    target->set_label("Target");
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("target_array", Variant::ARRAY))->set_label("Target");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_variant("element"));
 
-    create_pin(PD_Input, "element", Variant::NIL)->set_flags(OScriptNodePin::Flags::DATA);
-
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Output, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "index", Variant::INT)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("index", Variant::INT));
 
     super::allocate_default_pins();
 }
@@ -639,28 +679,37 @@ String OScriptNodeArrayAddElement::get_icon() const
     return "FileThumbnail";
 }
 
-OScriptNodeInstance* OScriptNodeArrayAddElement::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeArrayAddElement::instantiate()
 {
     OScriptNodeArrayAddElementInstance* i = memnew(OScriptNodeArrayAddElementInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeArrayRemoveElement::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - make sure variant is encoded into nil pin
+        const Ref<OScriptNodePin> element = find_pin("element", PD_Input);
+        if (element.is_valid() && PropertyUtils::is_nil_no_variant(element->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeArrayRemoveElement::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    Ref<OScriptNodePin> target = create_pin(PD_Input, "target_array", Variant::ARRAY);
-    target->set_flags(OScriptNodePin::Flags::DATA);
-    target->set_label("Target");
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("target_array", Variant::ARRAY))->set_label("Target");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_variant("element"));
 
-    create_pin(PD_Input, "element", Variant::NIL)->set_flags(OScriptNodePin::Flags::DATA);
-
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Output, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "removed", Variant::BOOL)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("removed", Variant::BOOL));
 
     super::allocate_default_pins();
 }
@@ -680,11 +729,10 @@ String OScriptNodeArrayRemoveElement::get_icon() const
     return "FileThumbnail";
 }
 
-OScriptNodeInstance* OScriptNodeArrayRemoveElement::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeArrayRemoveElement::instantiate()
 {
     OScriptNodeArrayRemoveElementInstance* i = memnew(OScriptNodeArrayRemoveElementInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 
@@ -692,15 +740,12 @@ OScriptNodeInstance* OScriptNodeArrayRemoveElement::instantiate(OScriptInstance*
 
 void OScriptNodeArrayRemoveIndex::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    Ref<OScriptNodePin> target = create_pin(PD_Input, "target_array", Variant::ARRAY);
-    target->set_flags(OScriptNodePin::Flags::DATA);
-    target->set_label("Target");
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("target_array", Variant::ARRAY))->set_label("Target");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("index", Variant::INT));
 
-    create_pin(PD_Input, "index", Variant::INT)->set_flags(OScriptNodePin::Flags::DATA);
-
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Output, "array", Variant::ARRAY)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("array", Variant::ARRAY));
 
     super::allocate_default_pins();
 }
@@ -720,10 +765,9 @@ String OScriptNodeArrayRemoveIndex::get_icon() const
     return "FileThumbnail";
 }
 
-OScriptNodeInstance* OScriptNodeArrayRemoveIndex::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeArrayRemoveIndex::instantiate()
 {
     OScriptNodeArrayRemoveIndexInstance* i = memnew(OScriptNodeArrayRemoveIndexInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }

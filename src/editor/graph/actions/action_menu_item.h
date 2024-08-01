@@ -32,6 +32,7 @@ struct OrchestratorGraphActionSpec
     String tooltip;
     String keywords;
     String text;
+    String qualifiers;
     String icon;
     String type_icon;
     bool graph_compatible{ true };
@@ -115,6 +116,12 @@ struct OrchestratorGraphActionMenuItemComparator
             // If the bit is equal, go to the next one
             if (categories_a[i] == categories_b[i])
                 continue;
+
+            // Places "Project" top-level before others
+            if (i == 0 && categories_a[i].match("project"))
+                return true;
+            else if (i == 0 && categories_b[i].match("project"))
+                return false;
 
             return categories_a[i] < categories_b[i];
         }

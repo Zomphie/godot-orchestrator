@@ -22,7 +22,7 @@
 using namespace godot;
 
 /// Forward declarations
-class OScript;
+class Orchestration;
 
 /// Defines a script variable
 ///
@@ -32,30 +32,52 @@ class OScript;
 ///
 class OScriptVariable : public Resource
 {
+    friend class Orchestration;
+
     GDCLASS(OScriptVariable, Resource);
 
     static void _bind_methods();
 
-    PropertyInfo _info;           //! Basic property details
-    Variant _default_value;       //! Optional defined default value
-    String _description;          //! An optional description for the variable
-    String _category;             //! Category for variables
-    bool _exported{ false };      //! Whether the variable is exposed on the node
-    OScript* _script{ nullptr };  //! Owning script
+    Orchestration* _orchestration{ nullptr };  //! The owning orchestration
+    PropertyInfo _info;                        //! Basic property details
+    Variant _default_value;                    //! Optional defined default value
+    String _description;                       //! An optional description for the variable
+    String _category;                          //! Category for variables
+    bool _exported{ false };                   //! Whether the variable is exposed on the node
+    bool _exportable{ false };                 //! Tracks whether the variable can be exported
+    String _classification;                    //! Variable classification
+    int _type_category{ 0 };                   //! Defaults to basic
+    Variant _type_subcategory;                 //! Subcategory type
+    String _value_list;                        //! Enum/Bitfield custom value list
 
 protected:
-
     //~ Begin Wrapped Interface
     void _validate_property(PropertyInfo& p_property) const;
+    bool _property_can_revert(const StringName& p_name) const;
+    bool _property_get_revert(const StringName& p_name, Variant& r_property);
     //~ End Wrapped Interface
 
-public:
+    /// Get whether the specified property is exportable.
+    /// @param p_property the property
+    /// @return true if the property can be exported, false otherwise
+    bool _is_exportable_type(const PropertyInfo& p_property) const;
+
+    /// Attempt to convert the default value to the new type
+    /// @return true if the conversion was successful, false otherwise
+    bool _convert_default_value(Variant::Type p_new_type);
+
     /// Constructor
+    /// Intentionally protected, variables created via an Orchestration
     OScriptVariable();
 
-    /// Get a reference to the script that owns this variable.
-    /// @return the owning script reference, should always be valid
-    Ref<OScript> get_owning_script() const;
+public:
+    /// Performs post resource initialization.
+    /// This is used to align and fix-up state across versions.
+    void post_initialize();
+
+    /// Get a reference to the orchestration that owns this variable.
+    /// @return the owning orchestration reference, should always be valid
+    Orchestration* get_orchestration() const;
 
     /// Get the variable's PropertyInfo structure
     /// @return the property info
@@ -83,6 +105,22 @@ public:
     /// @param p_category the variable's category
     void set_category(const String& p_category);
 
+    /// Get the variable's type
+    /// @return the variable type
+    String get_classification() const { return _classification; }
+
+    /// Set the variable's type
+    /// @param p_classification the variable type
+    void set_classification(const String& p_classification);
+
+    /// Get the custom value list for enum/bitfields
+    /// @return the custom value list
+    String get_custom_value_list() const { return _value_list; }
+
+    /// Sets the custom value list for enum/bitfields
+    /// @param p_value_list the custom value list
+    void set_custom_value_list(const String& p_value_list);
+
     /// Get the variable type
     /// @return the variable type
     Variant::Type get_variable_type() const { return _info.type; }
@@ -93,7 +131,7 @@ public:
 
     /// Get the variable type name
     /// @return the variable type name
-    String get_variable_type_name() const { return Variant::get_type_name(_info.type); }
+    String get_variable_type_name() const;
 
     /// Get the variable's description
     /// @return description for the variable
@@ -111,6 +149,10 @@ public:
     /// @param p_exported true exports the variable, false otherwise
     void set_exported(bool p_exported);
 
+    /// Is the variable exportable.
+    /// @return true if the variable can be exported, false otherwise
+    bool is_exportable() const { return _is_exportable_type(_info); }
+
     /// Get the default value for the variable, if one is defined
     /// @return variable's default value
     Variant get_default_value() const { return _default_value; }
@@ -118,12 +160,6 @@ public:
     /// Set the variable's default value
     /// @param p_default_value the default value
     void set_default_value(const Variant& p_default_value);
-
-    /// Helper method to construct a OScriptVariable from a Godot PropertyInfo struct.
-    /// @param p_script the script that will own the signal
-    /// @param p_property the property info struct
-    static Ref<OScriptVariable> create(OScript* p_script, const PropertyInfo& p_property);
-
 };
 
 #endif  // ORCHESTRATOR_SCRIPT_VARIABLE_H

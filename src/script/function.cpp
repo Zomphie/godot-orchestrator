@@ -14,9 +14,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-#include "function.h"
+#include "script/function.h"
 
 #include "common/dictionary_utils.h"
+#include "common/method_utils.h"
+#include "common/property_utils.h"
+#include "nodes/functions/function_entry.h"
+#include "nodes/functions/function_result.h"
 #include "script/script.h"
 
 void OScriptFunction::_get_property_list(List<PropertyInfo> *r_list) const
@@ -36,7 +40,7 @@ bool OScriptFunction::_get(const StringName &p_name, Variant &r_value)
     }
     else if (p_name.match("method"))
     {
-        r_value = DictionaryUtils::from_method(_method);
+        r_value = DictionaryUtils::from_method(_method, true);
         return true;
     }
     else if (p_name.match("id"))
@@ -63,6 +67,23 @@ bool OScriptFunction::_set(const StringName &p_name, const Variant &p_value)
     else if (p_name.match("method"))
     {
         _method = DictionaryUtils::to_method(p_value);
+        _returns_value = MethodUtils::has_return_value(_method);
+
+        // Cleanup the argument usage flags that were constructed incorrectly due to godot-cpp bug
+        for (PropertyInfo& argument : _method.arguments)
+        {
+            if (argument.usage == 7)
+                argument.usage = PROPERTY_USAGE_DEFAULT;
+
+            // If "Any" (Variant::NIL) set the usage flag correctly
+            if (PropertyUtils::is_nil_no_variant(argument))
+                argument.usage |= PROPERTY_USAGE_NIL_IS_VARIANT;
+        }
+
+        // Cleanup return value usage flags that were constructed incorrectly due to godot-cpp bug
+        if (_method.return_val.usage == 7)
+            _method.return_val.usage = PROPERTY_USAGE_DEFAULT;
+
         result = true;
     }
     else if (p_name.match("id"))
@@ -116,9 +137,9 @@ bool OScriptFunction::is_user_defined() const
     return _user_defined;
 }
 
-Ref<OScript> OScriptFunction::get_owning_script() const
+Orchestration* OScriptFunction::get_orchestration() const
 {
-    return _script;
+    return _orchestration;
 }
 
 int OScriptFunction::get_owning_node_id() const
@@ -128,7 +149,38 @@ int OScriptFunction::get_owning_node_id() const
 
 Ref<OScriptNode> OScriptFunction::get_owning_node() const
 {
-    return _script->get_node(_owning_node_id);
+    return _orchestration->get_node(_owning_node_id);
+}
+
+Ref<OScriptNode> OScriptFunction::get_return_node() const
+{
+    const Vector<Ref<OScriptNode>> nodes = get_return_nodes();
+    return nodes.is_empty() ? Ref<OScriptNode>() : nodes[0];
+}
+
+Vector<Ref<OScriptNode>> OScriptFunction::get_return_nodes() const
+{
+    Vector<Ref<OScriptNode>> results;
+
+    const Ref<OScriptGraph> graph = get_function_graph();
+    if (graph.is_valid())
+    {
+        for (const Ref<OScriptNode>& node : graph->get_nodes())
+        {
+            const Ref<OScriptNodeFunctionResult> result = node;
+            if (result.is_valid())
+                results.push_back(result);
+        }
+    }
+    return results;
+}
+
+Ref<OScriptGraph> OScriptFunction::get_function_graph() const
+{
+    if (_orchestration->has_graph(get_function_name()))
+        return _orchestration->get_graph(get_function_name());
+
+    return {};
 }
 
 Dictionary OScriptFunction::to_dict() const
@@ -157,6 +209,7 @@ bool OScriptFunction::resize_argument_list(size_t p_new_size)
             {
                 _method.arguments[i].name = "arg" + itos(i + 1);
                 _method.arguments[i].type = Variant::NIL;
+                _method.arguments[i].usage = PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_NIL_IS_VARIANT;
             }
             result = true;
         }
@@ -168,8 +221,10 @@ bool OScriptFunction::resize_argument_list(size_t p_new_size)
     }
 
     if (result)
+    {
         emit_changed();
-
+        notify_property_list_changed();
+    }
     return result;
 }
 
@@ -177,7 +232,36 @@ void OScriptFunction::set_argument_type(size_t p_index, Variant::Type p_type)
 {
     if (_method.arguments.size() > p_index && _user_defined)
     {
-        _method.arguments[p_index].type = p_type;
+        PropertyInfo& pi = _method.arguments[p_index];
+        pi.type = p_type;
+
+        // Function arguments set as "Any" type imply variant, using Variant::NIL
+        if (PropertyUtils::is_nil(pi))
+            pi.usage |= PROPERTY_USAGE_NIL_IS_VARIANT;
+        else
+            pi.usage &= ~PROPERTY_USAGE_NIL_IS_VARIANT;
+
+        emit_changed();
+    }
+}
+
+void OScriptFunction::set_argument(size_t p_index, const PropertyInfo& p_property)
+{
+    if (_method.arguments.size() > p_index && _user_defined)
+    {
+        _method.arguments[p_index] = p_property;
+        emit_changed();
+    }
+}
+
+void OScriptFunction::set_arguments(const TypedArray<Dictionary>& p_arguments)
+{
+    if (_user_defined)
+    {
+        _method.arguments.clear();
+        for (int index = 0; index < p_arguments.size(); ++index)
+            _method.arguments.push_back(DictionaryUtils::to_property(p_arguments[index]));
+
         emit_changed();
     }
 }
@@ -193,7 +277,7 @@ void OScriptFunction::set_argument_name(size_t p_index, const StringName& p_name
 
 bool OScriptFunction::has_return_type() const
 {
-    return _method.return_val.type != Variant::NIL;
+    return _returns_value;
 }
 
 Variant::Type OScriptFunction::get_return_type() const
@@ -203,18 +287,60 @@ Variant::Type OScriptFunction::get_return_type() const
 
 void OScriptFunction::set_return_type(Variant::Type p_type)
 {
-    if (_user_defined)
+    if (_user_defined && _method.return_val.type != p_type)
     {
-        _method.return_val.type = p_type;
+        if (_returns_value)
+            MethodUtils::set_return_value_type(_method, p_type);
+        else
+            MethodUtils::set_no_return_value(_method);
+
         emit_changed();
     }
 }
 
-Ref<OScriptFunction> OScriptFunction::create(OScript* p_script, const MethodInfo &p_method)
+void OScriptFunction::set_return(const PropertyInfo& p_property)
 {
-    Ref<OScriptFunction> function(memnew(OScriptFunction));
-    function->_guid = Guid::create_guid();
-    function->_method = p_method;
-    function->_script = p_script;
-    return function;
+    if (_user_defined)
+    {
+        _method.return_val = p_property;
+        _returns_value = MethodUtils::has_return_value(_method);
+
+        if (_returns_value)
+        {
+            // Since function returns a value, if there is no result node, add one.
+            // If the function entry exec pin is not yet wired, autowire it to the result node.
+            Ref<OScriptNodeFunctionResult> result = get_return_node();
+            if (!result.is_valid())
+            {
+                const Ref<OScriptNodeFunctionEntry> entry = get_owning_node();
+                const Vector2 position = entry->get_position() + Vector2(400, 0);
+
+                OScriptNodeInitContext context;
+                context.method = get_method_info();
+
+                result = get_function_graph()->create_node<OScriptNodeFunctionResult>(context, position);
+
+                const Ref<OScriptNodePin> entry_exec_out = entry->get_execution_pin();
+                if (entry_exec_out.is_valid() && !entry_exec_out->has_any_connections() && result.is_valid())
+                    get_function_graph()->link(entry->get_id(), 0, result->get_id(), 0);
+            }
+        }
+
+        emit_changed();
+        notify_property_list_changed();
+    }
+}
+
+void OScriptFunction::set_has_return_value(bool p_has_return_value)
+{
+    if (_returns_value != p_has_return_value)
+    {
+        if (p_has_return_value)
+            MethodUtils::set_return_value(_method);
+        else
+            MethodUtils::set_no_return_value(_method);
+
+        _returns_value = p_has_return_value;
+        emit_changed();
+    }
 }

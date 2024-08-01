@@ -27,7 +27,8 @@
 using namespace godot;
 
 /// Forward declarations
-class OScript;
+class Orchestration;
+class OScriptGraph;
 class OScriptNode;
 
 /// An OrchestratorScript function resource
@@ -41,27 +42,30 @@ class OScriptNode;
 ///
 class OScriptFunction : public Resource
 {
-    friend class OScript;
+    friend class Orchestration;
 
     GDCLASS(OScriptFunction, Resource);
     static void _bind_methods() { }
 
-    Guid _guid;                   //! Unique function id
-    MethodInfo _method;           //! The function definition
-    bool _user_defined{ false };  //! Whether function is user-defined
-    int _owning_node_id{ -1 };    //! Owning node id
-    OScript* _script{ nullptr };  //! Owning script
+    Orchestration* _orchestration{ nullptr };  //! Owning orchestration
+    Guid _guid;                                //! Unique function id
+    MethodInfo _method;                        //! The function definition
+    bool _user_defined{ false };               //! Whether function is user-defined
+    int _owning_node_id{ -1 };                 //! Owning node id
+    bool _returns_value{ false };              //! Whether the function returns a value
 
 protected:
-
     //~ Begin Wrapped Interface
     void _get_property_list(List<PropertyInfo>* r_list) const;
     bool _get(const StringName& p_name, Variant& r_value);
     bool _set(const StringName& p_name, const Variant& p_value);
     //~ End Wrapped Interface
 
-public:
+    /// Constructor
+    /// Intentionally protected, functions created via an Orchestration
+    OScriptFunction() = default;
 
+public:
     /// Get the function's name
     /// @return the function name
     const StringName& get_function_name() const;
@@ -86,9 +90,9 @@ public:
     /// @return true if the function is user-defined, false if its built-in
     bool is_user_defined() const;
 
-    /// Get a reference to the script that owns this function.
-    /// @return the owning script reference, should always be valid
-    Ref<OScript> get_owning_script() const;
+    /// Get a reference to the orchestration that owns this function.
+    /// @return the owning orchestration reference, should always be valid
+    Orchestration* get_orchestration() const;
 
     /// Get script node id that owns this function.
     /// @return the owning script node id
@@ -102,6 +106,18 @@ public:
     ///
     /// @return the owning script node reference, should always be valid.
     Ref<OScriptNode> get_owning_node() const;
+
+    /// Get the function's first return node, if any exist.
+    /// @return the first return node, or an invalid reference if none exist
+    Ref<OScriptNode> get_return_node() const;
+
+    /// Get the function's return nodes, if any exist
+    /// @return a vector of return nodes, may be empty
+    Vector<Ref<OScriptNode>> get_return_nodes() const;
+
+    /// Get the function graph
+    /// @return the graph this function is associated with
+    Ref<OScriptGraph> get_function_graph() const;
 
     /// Return the function definition as a Dictionary that contains a MethodInfo definition.
     /// In addition, the dictionary will include two custom properties,  "_oscript_guid" and
@@ -137,6 +153,15 @@ public:
     /// @param p_type the new argument type
     void set_argument_type(size_t p_index, Variant::Type p_type);
 
+    /// Sets the argument property details
+    /// @param p_index the argument index
+    /// @param p_property the argument details
+    void set_argument(size_t p_index, const PropertyInfo& p_property);
+
+    /// Sets the arguments for this function
+    /// @param p_arguments the argument list
+    void set_arguments(const TypedArray<Dictionary>& p_arguments);
+
     /// Utility function to check whether the function returns a value. This is determined by
     /// looking at the Variant::Type in the method's return definition and if it is NIL, then
     /// it's considered to have a void (or no) return value.
@@ -151,11 +176,13 @@ public:
     /// @param p_type the new return value type
     void set_return_type(Variant::Type p_type);
 
-    /// Helper method to construct a OScriptFunction from a Godot MethodInfo struct.
-    /// @param p_script the script that will own the function
-    /// @param p_method the method info struct
-    static Ref<OScriptFunction> create(OScript* p_script, const MethodInfo& p_method);
+    /// Set the return
+    /// @param p_property the return property
+    void set_return(const PropertyInfo& p_property);
 
+    /// Sets whether the function has a return value
+    /// @param p_has_return_value value true if the function has a return value, false otherwise
+    void set_has_return_value(bool p_has_return_value);
 };
 
 #endif  // ORCHESTRATOR_SCRIPT_FUNCTION_H

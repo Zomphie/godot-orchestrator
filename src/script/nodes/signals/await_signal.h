@@ -31,17 +31,16 @@
 class OScriptNodeAwaitSignal : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeAwaitSignal, OScriptNode);
+    static void _bind_methods() { }
 
 public:
     //~ Begin OScriptNode Interface
-    void post_initialize() override;
-    void post_placed_new_node() override;
     void allocate_default_pins() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "signals"; }
-    bool validate_node_during_build() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
+    void validate_node_during_build(BuildLog& p_log) const override;
     //~ End OScriptNode Interface
 };
 

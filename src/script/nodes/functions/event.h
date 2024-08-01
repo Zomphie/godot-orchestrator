@@ -29,11 +29,12 @@ using namespace godot;
 class OScriptNodeEvent : public OScriptNodeFunctionEntry
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeEvent, OScriptNodeFunctionEntry);
+    static void _bind_methods() { }
 
 protected:
 
     //~ Begin OScriptNodeFunctionTerminator Interface
-    bool _supports_return_values() const override { return false; }
+    bool _is_inputs_outputs_mutable() const override { return false; }
     //~ End OScriptNodeFunctionTerminator Interface
 
     //~ Begin OScriptNodeFunctionEntry Interface
@@ -46,7 +47,11 @@ public:
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "events"; }
+    String get_help_topic() const override;
+    String get_icon() const override { return "PlayStart"; }
+    bool can_user_delete_node() const override { return true; }
     bool can_inspect_node_properties() const override { return true; }
+    bool can_duplicate() const override { return false; }
     StringName resolve_type_class(const Ref<OScriptNodePin>& p_pin) const override;
     //~ End OScriptNode Interface
 

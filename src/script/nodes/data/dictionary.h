@@ -23,10 +23,15 @@
 /// Creates a new dictionary
 class OScriptNodeMakeDictionary : public OScriptEditablePinNode
 {
-    ORCHESTRATOR_NODE_CLASS(OScriptNodeMakeDictionary, OScriptEditablePinNode)
+    ORCHESTRATOR_NODE_CLASS(OScriptNodeMakeDictionary, OScriptEditablePinNode);
+    static void _bind_methods() { }
 
 protected:
     int _element_count{ 0 };
+
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -36,7 +41,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "constants_and_literals"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 
     //~ Begin OScriptEditablePinNode Interface
@@ -46,6 +51,24 @@ public:
     String get_pin_prefix() const override { return "Element"; }
     //~ End OScriptEditablePinNode Interface
 
+};
+
+/// A node that compliments the Dictionary "Get" method to set a value in the dictionary.
+class OScriptNodeDictionarySet : public OScriptNode
+{
+    ORCHESTRATOR_NODE_CLASS(OScriptNodeDictionarySet, OScriptNode);
+    static void _bind_methods() { }
+
+public:
+    //~ Begin OScriptNode Interface
+    void post_initialize() override;
+    void allocate_default_pins() override;
+    String get_tooltip_text() const override;
+    String get_node_title() const override;
+    String get_node_title_color_name() const override { return "function_call"; }
+    String get_icon() const override;
+    OScriptNodeInstance* instantiate() override;
+    //~ End OScriptNode Interface
 };
 
 #endif // ORCHESTRATOR_SCRIPT_NODE_DICTIONARIES_H_

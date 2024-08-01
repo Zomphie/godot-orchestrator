@@ -17,11 +17,15 @@
 #include "graph_node.h"
 
 #include "common/logger.h"
+#include "common/macros.h"
 #include "common/scene_utils.h"
+#include "common/settings.h"
+#include "editor/plugins/orchestrator_editor_plugin.h"
 #include "graph_edit.h"
 #include "graph_node_pin.h"
-#include "plugin/settings.h"
 #include "script/nodes/editable_pin_node.h"
+#include "script/nodes/functions/call_function.h"
+#include "script/nodes/functions/call_script_function.h"
 #include "script/script.h"
 
 #include <godot_cpp/classes/button.hpp>
@@ -41,10 +45,14 @@ OrchestratorGraphNode::OrchestratorGraphNode(OrchestratorGraphEdit* p_graph, con
 
     // Setup defaults
     set_name(itos(_node->get_id()));
-    set_resizable(true);
+    set_resizable(OrchestratorSettings::get_singleton()->get_setting("ui/nodes/resizable_by_default", false));
     set_h_size_flags(SIZE_EXPAND_FILL);
     set_v_size_flags(SIZE_EXPAND_FILL);
     set_meta("__script_node", p_node);
+
+    #if GODOT_VERSION >= 0x040300
+    _initialize_node_beakpoint_state();
+    #endif
 
     _update_tooltip();
 }
@@ -82,14 +90,6 @@ void OrchestratorGraphNode::_notification(int p_what)
 
         // Update the pin display upon entering
         _update_pins();
-
-        // IMPORTANT
-        // The context menu must be attached to the title bar or else this will cause
-        // problems with the GraphNode and slot/index logic when calling set_slot
-        // functions.
-        _context_menu = memnew(PopupMenu);
-        _context_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNode::_on_context_menu_selection));
-        get_titlebar_hbox()->add_child(_context_menu);
     }
 }
 
@@ -207,7 +207,7 @@ int OrchestratorGraphNode::get_inputs_with_opacity(float p_opacity)
 int OrchestratorGraphNode::get_outputs_with_opacity(float p_opacity)
 {
     int count = 0;
-    for (int i = 0; i < get_input_port_count(); i++)
+    for (int i = 0; i < get_output_port_count(); i++)
     {
         if (is_slot_enabled_right(i))
         {
@@ -240,7 +240,7 @@ void OrchestratorGraphNode::_update_pins()
         margin->add_child(container);
 
         Button* button = memnew(Button);
-        button->set_button_icon(SceneUtils::get_icon(this, "ZoomMore"));
+        button->set_button_icon(SceneUtils::get_editor_icon("ZoomMore"));
         button->set_tooltip_text("Add new pin");
         container->add_child(button);
 
@@ -257,7 +257,7 @@ void OrchestratorGraphNode::_update_indicators()
     if (_node->get_flags().has_flag(OScriptNode::ScriptNodeFlags::DEVELOPMENT_ONLY))
     {
         TextureRect* notification = memnew(TextureRect);
-        notification->set_texture(SceneUtils::get_icon(this, "Notification"));
+        notification->set_texture(SceneUtils::get_editor_icon("Notification"));
         notification->set_custom_minimum_size(Vector2(0, 24));
         notification->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
         notification->set_tooltip_text("Node only executes during development builds, not included in exported builds.");
@@ -267,12 +267,32 @@ void OrchestratorGraphNode::_update_indicators()
     if (_node->get_flags().has_flag(OScriptNode::ScriptNodeFlags::EXPERIMENTAL))
     {
         TextureRect* notification = memnew(TextureRect);
-        notification->set_texture(SceneUtils::get_icon(this, "NodeWarning"));
+        notification->set_texture(SceneUtils::get_editor_icon("NodeWarning"));
         notification->set_custom_minimum_size(Vector2(0, 24));
         notification->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
         notification->set_tooltip_text("Node is experimental and behavior may change without notice.");
         _indicators->add_child(notification);
     }
+
+    #if GODOT_VERSION >= 0x040300
+    if (_node->has_breakpoint())
+    {
+        TextureRect* breakpoint = memnew(TextureRect);
+        breakpoint->set_custom_minimum_size(Vector2(0, 24));
+        breakpoint->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+        if (!_node->has_disabled_breakpoint())
+        {
+            breakpoint->set_texture(SceneUtils::get_editor_icon("DebugSkipBreakpointsOff"));
+            breakpoint->set_tooltip_text("Debugger will break when processing this node");
+        }
+        else
+        {
+            breakpoint->set_texture(SceneUtils::get_editor_icon("DebugSkipBreakpointsOn"));
+            breakpoint->set_tooltip_text("Debugger will skip the breakpoint when processing this node");
+        }
+        _indicators->add_child(breakpoint);
+    }
+    #endif
 }
 
 void OrchestratorGraphNode::_update_titlebar()
@@ -284,7 +304,7 @@ void OrchestratorGraphNode::_update_titlebar()
     {
         Ref<Texture2D> icon_texture;
         if (!_node->get_icon().is_empty())
-            icon_texture = SceneUtils::get_icon(this, _node->get_icon());
+            icon_texture = SceneUtils::get_editor_icon(_node->get_icon());
 
         TextureRect* rect = Object::cast_to<TextureRect>(titlebar->get_child(0));
         if (!rect && icon_texture.is_valid())
@@ -304,7 +324,7 @@ void OrchestratorGraphNode::_update_titlebar()
             if (!_node->get_icon().is_empty())
             {
                 // New icon cannot be changed (make it look broken)
-                rect->set_texture(SceneUtils::get_icon(this, "Unknown"));
+                rect->set_texture(SceneUtils::get_editor_icon("Unknown"));
             }
             else
             {
@@ -327,63 +347,16 @@ void OrchestratorGraphNode::_update_titlebar()
 
 void OrchestratorGraphNode::_update_styles()
 {
-    const String color_name = _node->get_node_title_color_name();
-    if (!color_name.is_empty())
+    Ref<OrchestratorThemeCache> cache = OrchestratorPlugin::get_singleton()->get_theme_cache();
+    if (cache.is_valid())
     {
-        OrchestratorSettings* os = OrchestratorSettings::get_singleton();
-        const String key = vformat("ui/node_colors/%s", color_name);
-        if (os->has_setting(key))
-        {
-            Color color = os->get_setting(key);
-
-            Ref<StyleBoxFlat> panel = get_theme_stylebox("panel");
-            if (panel.is_valid())
-            {
-                Ref<StyleBoxFlat> new_panel = panel->duplicate(true);
-                if (new_panel.is_valid())
-                {
-                    new_panel->set_border_color(Color(0.f, 0.f, 0.f));
-                    new_panel->set_border_width_all(2);
-                    new_panel->set_border_width(Side::SIDE_TOP, 0);
-                    new_panel->set_content_margin_all(2);
-                    new_panel->set_content_margin(Side::SIDE_BOTTOM, 6);
-                    add_theme_stylebox_override("panel", new_panel);
-
-                    Ref<StyleBoxFlat> panel_selected = new_panel->duplicate();
-                    if (panel_selected.is_valid())
-                    {
-                        panel_selected->set_border_color(_get_selection_color());
-                        add_theme_stylebox_override("panel_selected", panel_selected);
-                    }
-                }
-            }
-
-            Ref<StyleBoxFlat> titlebar = get_theme_stylebox("titlebar");
-            if (titlebar.is_valid())
-            {
-                Ref<StyleBoxFlat> new_titlebar = titlebar->duplicate(true);
-                if (new_titlebar.is_valid())
-                {
-                    new_titlebar->set_bg_color(color);
-                    new_titlebar->set_border_width_all(2);
-                    new_titlebar->set_border_width(Side::SIDE_BOTTOM, 0);
-
-                    new_titlebar->set_content_margin_all(4);
-                    new_titlebar->set_content_margin(Side::SIDE_LEFT, 12);
-                    new_titlebar->set_content_margin(Side::SIDE_RIGHT, 12);
-                    new_titlebar->set_border_color(color);
-
-                    add_theme_stylebox_override("titlebar", new_titlebar);
-
-                    Ref<StyleBoxFlat> titlebar_selected = new_titlebar->duplicate();
-                    if (titlebar_selected.is_valid())
-                    {
-                        titlebar_selected->set_border_color(_get_selection_color());
-                        add_theme_stylebox_override("titlebar_selected", titlebar_selected);
-                    }
-                }
-            }
-        }
+        const String type_name = vformat("GraphNode_%s", _node->get_node_title_color_name());
+        begin_bulk_theme_override();
+        add_theme_stylebox_override("panel", cache->get_theme_stylebox("panel", "GraphNode"));
+        add_theme_stylebox_override("panel_selected", cache->get_theme_stylebox("panel_selected", "GraphNode"));
+        add_theme_stylebox_override("titlebar", cache->get_theme_stylebox("titlebar", type_name));
+        add_theme_stylebox_override("titlebar_selected", cache->get_theme_stylebox("titlebar_selected", type_name));
+        end_bulk_theme_override();
     }
 }
 
@@ -426,6 +399,15 @@ void OrchestratorGraphNode::_update_tooltip()
 
 void OrchestratorGraphNode::_show_context_menu(const Vector2& p_position)
 {
+    // IMPORTANT
+    // The context menu must be attached to the title bar or else this will cause
+    // problems with the GraphNode and slot/index logic when calling set_slot
+    // functions.
+    _context_menu = memnew(PopupMenu);
+    _context_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNode::_handle_context_menu));
+    _context_menu->connect("close_requested", callable_mp(this, &OrchestratorGraphNode::_cleanup_context_menu));
+    get_titlebar_hbox()->add_child(_context_menu);
+
     // When showing the context-menu, if the current node is not selected, we should clear the
     // selection and the operation will only be applicable for this node and its pin.
     if (!is_selected())
@@ -449,13 +431,10 @@ void OrchestratorGraphNode::_show_context_menu(const Vector2& p_position)
         if (action->get_icon().is_empty())
             _context_menu->add_item(action->get_text(), node_action_id);
         else
-            _context_menu->add_icon_item(SceneUtils::get_icon(this, action->get_icon()), action->get_text(), node_action_id);
+            _context_menu->add_icon_item(SceneUtils::get_editor_icon(action->get_icon()), action->get_text(), node_action_id);
 
         node_action_id++;
     }
-
-    // Check the node type
-    Ref<OScriptEditablePinNode> editable_node = _node;
 
     // Comment nodes are group-able, meaning that any node that is contained with the Comment node's rect window
     // can be automatically selected and dragged with the comment node. This can be done in two ways, one by
@@ -466,35 +445,55 @@ void OrchestratorGraphNode::_show_context_menu(const Vector2& p_position)
         const String icon = vformat("Theme%sAll", is_group_selected() ? "Deselect" : "Select");
         const String text = vformat("%s Group", is_group_selected() ? "Deselect" : "Select");
         const int32_t id = is_group_selected() ? CM_DESELECT_GROUP : CM_SELECT_GROUP;
-        _context_menu->add_icon_item(SceneUtils::get_icon(this, icon), text, id);
+        _context_menu->add_icon_item(SceneUtils::get_editor_icon(icon), text, id);
     }
 
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "Remove"), "Delete", CM_DELETE, KEY_DELETE);
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("Remove"), "Delete", CM_DELETE, KEY_DELETE);
     _context_menu->set_item_disabled(_context_menu->get_item_index(CM_DELETE), !_node->can_user_delete_node());
 
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "ActionCut"), "Cut", CM_CUT, Key(KEY_MASK_CTRL | KEY_X));
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "ActionCopy"), "Copy", CM_COPY, Key(KEY_MASK_CTRL | KEY_C));
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "Duplicate"), "Duplicate", CM_DUPLICATE, Key(KEY_MASK_CTRL | KEY_D));
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("ActionCut"), "Cut", CM_CUT, OACCEL_KEY(KEY_MASK_CTRL, KEY_X));
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("ActionCopy"), "Copy", CM_COPY, OACCEL_KEY(KEY_MASK_CTRL, KEY_C));
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("Duplicate"), "Duplicate", CM_DUPLICATE, OACCEL_KEY(KEY_MASK_CTRL, KEY_D));
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("DistractionFree"), "Toggle Resizer", CM_RESIZABLE);
 
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "Loop"), "Refresh Nodes", CM_REFRESH);
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "Unlinked"), "Break Node Link(s)", CM_BREAK_LINKS);
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("Loop"), "Refresh Nodes", CM_REFRESH);
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("Unlinked"), "Break Node Link(s)", CM_BREAK_LINKS);
     _context_menu->set_item_disabled(_context_menu->get_item_index(CM_BREAK_LINKS), !_node->has_any_connections());
 
-    if (editable_node.is_valid())
+    bool multi_selections = get_graph()->get_selected_nodes().size() > 1;
+
+    if (_is_editable() && !multi_selections)
         _context_menu->add_item("Add Option Pin", CM_ADD_OPTION_PIN);
 
-    // todo: support breakpoints (See Trello)
-    // _context_menu->add_separator("Breakpoints");
-    // _context_menu->add_item("Toggle Breakpoint", CM_TOGGLE_BREAKPOINT, KEY_F9);
-    // _context_menu->add_item("Add Breakpoint", CM_ADD_BREAKPOINT);
+    _context_menu->add_separator("Organization");
+    _context_menu->add_item("Expand Node", CM_EXPAND_NODE);
+    _context_menu->add_item("Collapse to Function", CM_COLLAPSE_FUNCTION);
+
+    Ref<OScriptNodeCallScriptFunction> call_script_function = _node;
+    if (!call_script_function.is_valid())
+        _context_menu->set_item_disabled(_context_menu->get_item_index(CM_EXPAND_NODE), true);
+
+    #if GODOT_VERSION >= 0x040300
+    if (!multi_selections)
+    {
+        _context_menu->add_separator("Breakpoints");
+        _context_menu->add_item("Toggle Breakpoint", CM_TOGGLE_BREAKPOINT, KEY_F9);
+        if (_node->has_breakpoint())
+        {
+            _context_menu->add_item("Remove breakpoint", CM_REMOVE_BREAKPOINT);
+            if (_node->has_disabled_breakpoint())
+                _context_menu->add_item("Enable breakpoint", CM_ADD_BREAKPOINT);
+            else
+                _context_menu->add_item("Disable breakpoint", CM_DISABLE_BREAKPOINT);
+        }
+    }
+    #endif
 
     _context_menu->add_separator("Documentation");
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "Help"), "View Documentation", CM_VIEW_DOCUMENTATION);
-
-    #ifdef _DEBUG
-    _context_menu->add_separator("Debugging");
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "Godot"), "Show details", CM_SHOW_DETAILS);
-    #endif
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("Help"), "View Documentation", CM_VIEW_DOCUMENTATION);
+    _context_menu->set_item_disabled(_context_menu->get_item_index(CM_VIEW_DOCUMENTATION), multi_selections);
+    if (multi_selections)
+        _context_menu->set_item_tooltip(_context_menu->get_item_index(CM_VIEW_DOCUMENTATION), "Select a single node to view documentation.");
 
     _context_menu->set_position(get_screen_position() + (p_position * (real_t) get_graph()->get_zoom()));
     _context_menu->reset_size();
@@ -503,12 +502,48 @@ void OrchestratorGraphNode::_show_context_menu(const Vector2& p_position)
 
 void OrchestratorGraphNode::_simulate_action_pressed(const String& p_action_name)
 {
-    Ref<InputEventAction> action = memnew(InputEventAction());
-    action->set_action(p_action_name);
-    action->set_pressed(true);
-
-    Input::get_singleton()->parse_input_event(action);
+    get_graph()->execute_action(p_action_name);
 }
+
+#if GODOT_VERSION >= 0x040300
+void OrchestratorGraphNode::_initialize_node_beakpoint_state()
+{
+    Ref<OrchestratorEditorCache> cache = OrchestratorPlugin::get_singleton()->get_editor_cache();
+    if (cache.is_valid())
+    {
+        const String path = _node->get_orchestration()->get_self()->get_path();
+        #if GODOT_VERSION >= 0x040300
+        const bool disabled = cache->is_node_disabled_breakpoint(path, _node->get_id());
+        const bool enabled  = cache->is_node_breakpoint(path, _node->get_id());
+        if (disabled || enabled)
+            _set_breakpoint_state(disabled ? OScriptNode::BREAKPOINT_DISABLED : OScriptNode::BREAKPOINT_ENABLED);
+        else
+            _set_breakpoint_state(OScriptNode::BREAKPOINT_NONE);
+        #endif
+    }
+}
+
+void OrchestratorGraphNode::_set_breakpoint_state(OScriptNode::BreakpointFlags p_flag)
+{
+    _node->set_breakpoint_flag(p_flag);
+
+    OrchestratorEditorDebuggerPlugin* debugger = OrchestratorEditorDebuggerPlugin::get_singleton();
+    if (!debugger)
+        return;
+
+    const int node_id = _node->get_id();
+    const String path = _node->get_orchestration()->get_self()->get_path();
+
+    debugger->set_breakpoint(path, node_id, p_flag != OScriptNode::BreakpointFlags::BREAKPOINT_NONE);
+
+    Ref<OrchestratorEditorCache> cache = OrchestratorPlugin::get_singleton()->get_editor_cache();
+    if (cache.is_valid())
+    {
+        cache->set_breakpoint(path, node_id, p_flag == OScriptNode::BreakpointFlags::BREAKPOINT_ENABLED);
+        cache->set_disabled_breakpoint(path, node_id, p_flag != OScriptNode::BreakpointFlags::BREAKPOINT_DISABLED);
+    }
+}
+#endif
 
 void OrchestratorGraphNode::_on_changed()
 {
@@ -519,10 +554,41 @@ void OrchestratorGraphNode::_on_changed()
     _update_node_attributes();
 }
 
+bool OrchestratorGraphNode::_is_editable() const
+{
+    Ref<OScriptEditablePinNode> editable_node = _node;
+    if (editable_node.is_valid())
+        return true;
+
+    Ref<OScriptNodeCallFunction> function_call_node = _node;
+    if (function_call_node.is_valid() && function_call_node->is_vararg())
+        return true;
+
+    return false;
+}
+
 bool OrchestratorGraphNode::_is_add_pin_button_visible() const
 {
     Ref<OScriptEditablePinNode> editable_node = _node;
-    return editable_node.is_valid() && editable_node->can_add_dynamic_pin();
+    if (editable_node.is_valid())
+        return editable_node->can_add_dynamic_pin();
+
+    Ref<OScriptNodeCallFunction> function_call_node = _node;
+    if (function_call_node.is_valid())
+        return function_call_node->is_vararg();
+
+    return false;
+}
+
+void OrchestratorGraphNode::_add_option_pin()
+{
+    Ref<OScriptEditablePinNode> editable = _node;
+    if (editable.is_valid())
+        editable->add_dynamic_pin();
+
+    Ref<OScriptNodeCallFunction> function_call_node = _node;
+    if(function_call_node.is_valid() && function_call_node->is_vararg())
+        function_call_node->add_dynamic_pin();
 }
 
 List<OrchestratorGraphNode*> OrchestratorGraphNode::get_nodes_within_global_rect()
@@ -539,6 +605,31 @@ List<OrchestratorGraphNode*> OrchestratorGraphNode::get_nodes_within_global_rect
         }
     });
     return results;
+}
+
+int32_t OrchestratorGraphNode::get_port_at_position(const Vector2& p_position, EPinDirection p_direction)
+{
+    if (p_direction == PD_Input)
+    {
+        const Vector2 position = p_position - get_position_offset();
+        const Rect2 zone = Rect2(position - Vector2(1,1), Vector2(2,2)); // Fake hotsize
+        for (int i = 0; i < get_input_port_count(); i++)
+        {
+            if (zone.has_point(get_input_port_position(i)))
+                return i;
+        }
+    }
+    else if (p_direction == PD_Output)
+    {
+        const Vector2 position = p_position - get_position_offset();
+        const Rect2 zone = Rect2(position - Vector2(1,1), Vector2(2,2)); // Fake hotzone
+        for (int i = 0; i < get_output_port_count(); i++)
+        {
+            if (zone.has_point(get_output_port_position(i)))
+                return i;
+        }
+    }
+    return -1;
 }
 
 void OrchestratorGraphNode::_on_node_moved([[maybe_unused]] Vector2 p_old_pos, Vector2 p_new_pos)
@@ -570,12 +661,10 @@ void OrchestratorGraphNode::_on_pin_disconnected(int p_type, int p_index)
 
 void OrchestratorGraphNode::_on_add_pin_pressed()
 {
-    Ref<OScriptEditablePinNode> editable_node = _node;
-    if (editable_node.is_valid() && editable_node->can_add_dynamic_pin())
-        editable_node->add_dynamic_pin();
+    _add_option_pin();
 }
 
-void OrchestratorGraphNode::_on_context_menu_selection(int p_id)
+void OrchestratorGraphNode::_handle_context_menu(int p_id)
 {
     if (p_id >= CM_NODE_ACTION)
     {
@@ -609,23 +698,30 @@ void OrchestratorGraphNode::_on_context_menu_selection(int p_id)
             }
             case CM_DELETE:
             {
-                if (_node->can_user_delete_node())
-                    get_script_node()->get_owning_script()->remove_node(_node->get_id());
+                _simulate_action_pressed("ui_graph_delete");
                 break;
             }
             case CM_REFRESH:
             {
-                _node->reconstruct_node();
+                for (Ref<OScriptNode>& node : get_graph()->get_selected_script_nodes())
+                    node->reconstruct_node();
                 break;
             }
             case CM_BREAK_LINKS:
             {
-                unlink_all();
+                for (OrchestratorGraphNode* node : get_graph()->get_selected_nodes())
+                    node->unlink_all();
                 break;
             }
             case CM_VIEW_DOCUMENTATION:
             {
-                get_graph()->goto_class_help(_node->get_class());
+                get_graph()->goto_class_help(_node->get_help_topic());
+                break;
+            }
+            case CM_RESIZABLE:
+            {
+                for (OrchestratorGraphNode* node : get_graph()->get_selected_nodes())
+                    node->set_resizable(!node->is_resizable());
                 break;
             }
             case CM_SELECT_GROUP:
@@ -640,28 +736,49 @@ void OrchestratorGraphNode::_on_context_menu_selection(int p_id)
             }
             case CM_ADD_OPTION_PIN:
             {
-                Ref<OScriptEditablePinNode> editable = _node;
-                if (editable.is_valid())
-                    editable->add_dynamic_pin();
+                _add_option_pin();
                 break;
             }
-            #ifdef _DEBUG
-            case CM_SHOW_DETAILS:
+            case CM_COLLAPSE_FUNCTION:
             {
-                UtilityFunctions::print("--- Dump Node ", _node->get_class(), " ---");
-                UtilityFunctions::print("Position: ", _node->get_position());
-
-                Vector<Ref<OScriptNodePin>> pins = _node->get_all_pins();
-                UtilityFunctions::print("Pins: ", pins.size());
-                for (const Ref<OScriptNodePin>& pin : pins)
-                {
-                    UtilityFunctions::print("Pin[", pin->get_pin_name(), "]: ",
-                                            pin->is_input() ? "Input" : "Output",
-                                            " Default: ", pin->get_effective_default_value(),
-                                            " Type: ", pin->get_pin_type_name(), " (", pin->get_type(), ")",
-                                            " Target: ", pin->get_target_class(),
-                                            " Flags: ", pin->get_flags().operator Variant());
-                }
+                get_graph()->emit_signal("collapse_selected_to_function");
+                break;
+            }
+            case CM_EXPAND_NODE:
+            {
+                get_graph()->emit_signal("expand_node", _node->get_id());
+                break;
+            }
+            #if GODOT_VERSION >= 0x040300
+            case CM_TOGGLE_BREAKPOINT:
+            {
+                // An OScriptNode registers the breakpoint data from the current open session.
+                // This data is transient and is lost across restarts, although GDScript persists
+                // this and we should implement this too.
+                //
+                // What we need to integrate with is EditorDebugNode. It is what will be responsible
+                // for coordinating the breakpoint communication with the EngineDebugger that runs
+                // in the separate prcoess that runs the game in F5. It uses Local/Remove debuggers.
+                if (_node->has_breakpoint())
+                    _set_breakpoint_state(OScriptNode::BreakpointFlags::BREAKPOINT_NONE);
+                else
+                    _set_breakpoint_state(OScriptNode::BreakpointFlags::BREAKPOINT_ENABLED);
+                break;
+            }
+            case CM_ADD_BREAKPOINT:
+            case CM_ENABLE_BREAKPOINT:
+            {
+                _set_breakpoint_state(OScriptNode::BreakpointFlags::BREAKPOINT_ENABLED);
+                break;
+            }
+            case CM_REMOVE_BREAKPOINT:
+            {
+                _set_breakpoint_state(OScriptNode::BreakpointFlags::BREAKPOINT_NONE);
+                break;
+            }
+            case CM_DISABLE_BREAKPOINT:
+            {
+                _set_breakpoint_state(OScriptNode::BreakpointFlags::BREAKPOINT_DISABLED);
                 break;
             }
             #endif
@@ -675,4 +792,15 @@ void OrchestratorGraphNode::_on_context_menu_selection(int p_id)
 
     // Cleanup actions
     _context_actions.clear();
+    _cleanup_context_menu();
 }
+
+void OrchestratorGraphNode::_cleanup_context_menu()
+{
+    if (_context_menu)
+    {
+        _context_menu->queue_free();
+        _context_menu = nullptr;
+    }
+}
+

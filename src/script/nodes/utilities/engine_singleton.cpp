@@ -16,7 +16,9 @@
 //
 #include "engine_singleton.h"
 
+#include "common/property_utils.h"
 #include "common/string_utils.h"
+#include "common/version.h"
 
 #include <godot_cpp/classes/engine.hpp>
 
@@ -26,7 +28,7 @@ class OScriptNodeEngineSingletonInstance : public OScriptNodeInstance
     Object* _value{ nullptr };
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.set_output(0, _value);
         return 0;
@@ -62,12 +64,22 @@ bool OScriptNodeEngineSingleton::_set(const StringName& p_name, const Variant& p
     return false;
 }
 
+void OScriptNodeEngineSingleton::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 and p_current_version >= 2)
+    {
+        // Fixup - makes sure that singleton class type is encoded in pin
+        const Ref<OScriptNodePin> singleton = find_pin("singleton", PD_Output);
+        if (singleton.is_valid() && singleton->get_property_info().class_name != _singleton)
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeEngineSingleton::allocate_default_pins()
 {
-    Ref<OScriptNodePin> pin = create_pin(PD_Output, "singleton", Variant::OBJECT);
-    pin->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-    pin->set_label(_singleton);
-
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_object("singleton", _singleton))->set_label(_singleton, false);
     super::allocate_default_pins();
 }
 
@@ -81,9 +93,23 @@ String OScriptNodeEngineSingleton::get_node_title() const
     return vformat("Get %s", _singleton);
 }
 
+String OScriptNodeEngineSingleton::get_help_topic() const
+{
+    #if GODOT_VERSION >= 0x040300
+    return vformat("class:%s", _singleton);
+    #else
+    return super::get_help_topic();
+    #endif
+}
+
 String OScriptNodeEngineSingleton::get_icon() const
 {
     return "GodotMonochrome";
+}
+
+PackedStringArray OScriptNodeEngineSingleton::get_keywords() const
+{
+    return {};
 }
 
 StringName OScriptNodeEngineSingleton::resolve_type_class(const Ref<OScriptNodePin>& p_pin) const
@@ -91,14 +117,29 @@ StringName OScriptNodeEngineSingleton::resolve_type_class(const Ref<OScriptNodeP
     return _singleton;
 }
 
-OScriptNodeInstance* OScriptNodeEngineSingleton::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeEngineSingleton::instantiate()
 {
     OScriptNodeEngineSingletonInstance* i = memnew(OScriptNodeEngineSingletonInstance);
     i->_node = this;
-    i->_instance = p_instance;
 
     if (!_singleton.is_empty() && Engine::get_singleton()->get_singleton_list().has(_singleton))
         i->_value = Engine::get_singleton()->get_singleton(_singleton);
 
     return i;
+}
+
+void OScriptNodeEngineSingleton::initialize(const OScriptNodeInitContext& p_context)
+{
+    if (p_context.user_data && p_context.user_data.value().has("singleton_name"))
+        _singleton = p_context.user_data.value()["singleton_name"];
+
+    super::initialize(p_context);
+}
+
+void OScriptNodeEngineSingleton::validate_node_during_build(BuildLog& p_log) const
+{
+    if (!Engine::get_singleton()->get_singleton_list().has(_singleton))
+        p_log.error(this, "No singleton found with the name: " + _singleton);
+
+    super::validate_node_during_build(p_log);
 }

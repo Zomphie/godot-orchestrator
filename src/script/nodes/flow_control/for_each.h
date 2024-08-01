@@ -24,9 +24,16 @@
 class OScriptNodeForEach : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeForEach, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     bool _with_break{ false };  //! Whether break is enabled
+
+    //~ Begin Wrapped Interface
+    void _get_property_list(List<PropertyInfo>* r_list) const;
+    bool _get(const StringName& p_name, Variant& r_value) const;
+    bool _set(const StringName& p_name, const Variant& p_value);
+    //~ End Wrapped Interface
 
     /// Set whether the break pin is used.
     /// @param p_break_status true if the break pin is visible, false otherwise
@@ -35,12 +42,14 @@ protected:
 public:
     //~ Begin OScriptNode Interface
     void allocate_default_pins() override;
+    void post_initialize() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "flow_control"; }
     String get_icon() const override;
+    PackedStringArray get_keywords() const override { return Array::make("for", "each", "loop"); }
     void get_actions(List<Ref<OScriptAction>>& p_action_list) override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
 };

@@ -16,6 +16,7 @@
 //
 #include "local_variable.h"
 
+#include "common/property_utils.h"
 #include "common/variant_utils.h"
 
 class OScriptNodeLocalVariableInstance : public OScriptNodeInstance
@@ -24,7 +25,7 @@ class OScriptNodeLocalVariableInstance : public OScriptNodeInstance
 public:
     int get_working_memory_size() const override { return 1; }
 
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.set_output(0, p_context.get_working_memory());
         return 0;
@@ -39,7 +40,7 @@ class OScriptNodeAssignLocalVariableInstance : public OScriptNodeInstance
 public:
     int get_working_memory_size() const override { return 1; }
 
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.set_working_memory(0, p_context.get_input(1));
         return 0;
@@ -111,14 +112,15 @@ bool OScriptNodeLocalVariable::_set(const StringName& p_name, const Variant& p_v
 
 void OScriptNodeLocalVariable::post_initialize()
 {
-    super::post_initialize();
-
     _type = find_pin("variable", PD_Output)->get_type();
+
+    super::post_initialize();
 }
 
 void OScriptNodeLocalVariable::allocate_default_pins()
 {
-    create_pin(PD_Output, "variable", _type)->set_flags(OScriptNodePin::Flags::DATA);
+    // todo: handle complex types like objects, enums, bitfields, etc.
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("variable", _type));
     super::allocate_default_pins();
 }
 
@@ -145,11 +147,10 @@ bool OScriptNodeLocalVariable::is_compatible_with_graph(const Ref<OScriptGraph>&
     return p_graph->get_flags().has_flag(OScriptGraph::GraphFlags::GF_FUNCTION);
 }
 
-OScriptNodeInstance* OScriptNodeLocalVariable::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeLocalVariable::instantiate()
 {
     OScriptNodeLocalVariableInstance* i = memnew(OScriptNodeLocalVariableInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 
@@ -169,18 +170,44 @@ void OScriptNodeLocalVariable::initialize(const OScriptNodeInitContext& p_contex
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeAssignLocalVariable::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 and p_current_version >= 2)
+    {
+        // Fixup - make sure variant is encoded for nils
+        Ref<OScriptNodePin> variable = find_pin("variable", PD_Input);
+        if (variable.is_valid() && PropertyUtils::is_nil_no_variant(variable->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeAssignLocalVariable::post_initialize()
 {
-    super::post_initialize();
     _type = find_pin("variable", PD_Input)->get_type();
+
+    super::post_initialize();
 }
 
 void OScriptNodeAssignLocalVariable::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Input, "variable", _type)->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::IGNORE_DEFAULT);
-    create_pin(PD_Input, "value", _type)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+
+    // todo: handle complex types like objects, enums, bitfields, etc.
+    if (_type == Variant::NIL)
+    {
+        // Should be variants
+        create_pin(PD_Input, PT_Data, PropertyUtils::make_variant("variable"))->set_flag(OScriptNodePin::Flags::IGNORE_DEFAULT);
+        create_pin(PD_Input, PT_Data, PropertyUtils::make_variant("value"));
+    }
+    else
+    {
+        create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("variable", _type))->set_flag(OScriptNodePin::Flags::IGNORE_DEFAULT);
+        create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("value", _type));
+    }
+
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
 
     super::allocate_default_pins();
 }
@@ -200,12 +227,30 @@ bool OScriptNodeAssignLocalVariable::is_compatible_with_graph(const Ref<OScriptG
     return p_graph->get_flags().has_flag(OScriptGraph::GraphFlags::GF_FUNCTION);
 }
 
-OScriptNodeInstance* OScriptNodeAssignLocalVariable::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeAssignLocalVariable::instantiate()
 {
     OScriptNodeAssignLocalVariableInstance* i = memnew(OScriptNodeAssignLocalVariableInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
+}
+
+void OScriptNodeAssignLocalVariable::validate_node_during_build(BuildLog& p_log) const
+{
+    Ref<OScriptNodePin> variable = find_pin("variable", PD_Input);
+    if (variable.is_valid())
+    {
+        if (!variable->has_any_connections())
+            p_log.error(this, variable, "Requires a connection.");
+        else
+        {
+            Ref<OScriptNodePin> source_pin = variable->get_connections()[0];
+            if (source_pin.is_valid())
+            {
+                if (!Object::cast_to<OScriptNodeLocalVariable>(source_pin->get_owning_node()))
+                    p_log.error(this, variable, "Connection expected with a Local Variable node.");
+            }
+        }
+    }
 }
 
 void OScriptNodeAssignLocalVariable::on_pin_connected(const Ref<OScriptNodePin>& p_pin)

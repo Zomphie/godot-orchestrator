@@ -16,6 +16,7 @@
 //
 #include "function_entry.h"
 
+#include "common/property_utils.h"
 #include "script/function.h"
 
 class OScriptNodeFunctionEntryInstance : public OScriptNodeInstance
@@ -24,7 +25,7 @@ class OScriptNodeFunctionEntryInstance : public OScriptNodeInstance
     size_t _argument_count{ 0 };
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         for (size_t i = 0; i < _argument_count; i++)
             p_context.copy_input_to_output(i, i);
@@ -41,7 +42,7 @@ OScriptNodeFunctionEntry::OScriptNodeFunctionEntry()
 
 void OScriptNodeFunctionEntry::allocate_default_pins()
 {
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
 
     Ref<OScriptFunction> function = get_function();
     if (function.is_valid())
@@ -63,7 +64,7 @@ String OScriptNodeFunctionEntry::get_tooltip_text() const
 {
     Ref<OScriptFunction> function = get_function();
     if (function.is_valid())
-        return vformat("Target is %s", get_owning_script()->get_base_type());
+        return vformat("Target is %s", get_orchestration()->get_base_type());
 
     return super::get_tooltip_text();
 }
@@ -88,11 +89,10 @@ bool OScriptNodeFunctionEntry::can_create_user_defined_pin(EPinDirection p_direc
     return result;
 }
 
-OScriptNodeInstance* OScriptNodeFunctionEntry::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeFunctionEntry::instantiate()
 {
     OScriptNodeFunctionEntryInstance* i = memnew(OScriptNodeFunctionEntryInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_argument_count = _function->get_argument_count();
     return i;
 }
@@ -102,9 +102,13 @@ void OScriptNodeFunctionEntry::initialize(const OScriptNodeInitContext& p_contex
     ERR_FAIL_COND_MSG(!p_context.method, "Failed to initialize node without a MethodInfo");
 
     const MethodInfo& mi = p_context.method.value();
-    _function = get_owning_script()->create_function(mi, get_id(), _is_user_defined());
+    _function = get_orchestration()->create_function(mi, get_id(), _is_user_defined());
     _guid = _function->get_guid();
 
     super::initialize(p_context);
 }
 
+Ref<OScriptNodePin> OScriptNodeFunctionEntry::get_execution_pin() const
+{
+    return find_pin("ExecOut", PD_Output);
+}

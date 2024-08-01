@@ -16,6 +16,7 @@
 //
 #include "select.h"
 
+#include "common/property_utils.h"
 #include "common/variant_utils.h"
 
 class OScriptNodeSelectInstance : public OScriptNodeInstance
@@ -23,7 +24,7 @@ class OScriptNodeSelectInstance : public OScriptNodeInstance
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeSelect);
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Variant pick_a = p_context.get_input(2);
         if (pick_a.booleanize())
@@ -66,13 +67,26 @@ bool OScriptNodeSelect::_set(const StringName& p_name, const Variant& p_value)
     return false;
 }
 
+void OScriptNodeSelect::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - reconstruct if node is NIL without variant flag
+        Ref<OScriptNodePin> a = find_pin("a", PD_Input);
+        if (!a.is_valid() || PropertyUtils::is_nil_no_variant(a->get_property_info()))
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeSelect::allocate_default_pins()
 {
     const Variant::Type type = VariantUtils::to_type(_type);
-    create_pin(PD_Input, "a", type)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "b", type)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "pick_a", Variant::BOOL, false)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "return_value", type)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("a", type, true));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("b", type, true));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("pick_a", Variant::BOOL), false);
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("result", type, true));
 
     super::allocate_default_pins();
 }
@@ -95,18 +109,13 @@ String OScriptNodeSelect::get_icon() const
 void OScriptNodeSelect::change_pin_types(Variant::Type p_type)
 {
     _type = p_type;
-
-    find_pin("a", PD_Input)->set_type(p_type);
-    find_pin("b", PD_Input)->set_type(p_type);
-    find_pin("return_value", PD_Output)->set_type(p_type);
-
     reconstruct_node();
 }
 
 Vector<Variant::Type> OScriptNodeSelect::get_possible_pin_types() const
 {
     Vector<Variant::Type> types;
-    for (int i = 1; i < Variant::VARIANT_MAX; i++)
+    for (int i = 0; i < Variant::VARIANT_MAX; i++)
     {
         if (i >= int(Variant::RID))
             break;
@@ -116,10 +125,9 @@ Vector<Variant::Type> OScriptNodeSelect::get_possible_pin_types() const
     return types;
 }
 
-OScriptNodeInstance* OScriptNodeSelect::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeSelect::instantiate()
 {
     OScriptNodeSelectInstance* i = memnew(OScriptNodeSelectInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }

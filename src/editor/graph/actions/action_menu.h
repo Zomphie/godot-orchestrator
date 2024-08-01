@@ -76,12 +76,25 @@ private:
     /// Populates the tree with filtered actions
     void _generate_filtered_actions();
 
+    /// Traverse tree
+    /// @param p_item the tree item to traverse from
+    /// @param r_highest_score the highest score
+    /// @return the tree item with the higest score if found, nullptr otherwise
+    TreeItem* _traverse_tree(TreeItem* p_item, float& r_highest_score);
+
+    /// Calculate the score for a tree item
+    /// @param p_item the item to calculate the score for
+    /// @return the calculated score
+    float _calculate_score(TreeItem* p_item);
+
     /// Common functionality for creating action tree items
     /// @param p_parent the parent item, should not be <code>null</code>
     /// @param p_menu_item the menu item to be called, should be valid
     /// @param p_text the text to be added to the menu item
+    /// @param p_favorite_icon whether the favorite icon is added to the item
+    /// @param p_is_favorite whether the favorite icon should be filled as a favorite
     /// @return the constructed tree item, never <code>null</code>
-    TreeItem* _make_item(TreeItem* p_parent, const Ref<OrchestratorGraphActionMenuItem>& p_menu_item, const String& p_text);
+    TreeItem* _make_item(TreeItem* p_parent, const Ref<OrchestratorGraphActionMenuItem>& p_menu_item, const String& p_text, bool p_favorite_icon = false, bool p_is_favorite = false);
 
     /// Creates the favorite item's text
     /// @param p_parent the parent item, should not be <code>null</code>
@@ -115,6 +128,13 @@ private:
 
     /// Dispatched when a tree element is double-clicked
     void _on_tree_item_activated();
+
+    /// Dispatched when clicking anywhere in the tree with no selection
+    void _on_tree_nothing_selected();
+
+    /// Dispached when a tree item is collapsed or expanded
+    /// @param p_item the item collapsed or expanded
+    void _on_tree_item_collapsed(TreeItem* p_item);
 
     /// Dispatched when the user clicks a button in the tree
     /// @param p_item the current tree item who's button was clicked

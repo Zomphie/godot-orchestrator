@@ -16,6 +16,10 @@
 //
 #include "graph_node_pin_object.h"
 
+#include "script/node.h"
+#include "script/nodes/functions/call_function.h"
+#include "script/nodes/variables/variable.h"
+
 OrchestratorGraphNodePinObject::OrchestratorGraphNodePinObject(OrchestratorGraphNode* p_node, const Ref<OScriptNodePin>& p_pin)
     : OrchestratorGraphNodePin(p_node, p_pin)
 {
@@ -25,9 +29,24 @@ void OrchestratorGraphNodePinObject::_bind_methods()
 {
 }
 
-Control* OrchestratorGraphNodePinObject::_get_default_value_widget()
+void OrchestratorGraphNodePinObject::_update_label()
 {
-    Label* label = memnew(Label);
-    label->set_text("(self)");
-    return label;
+    if (Object::cast_to<OScriptNodeCallFunction>(_pin->get_owning_node()))
+    {
+        if (_pin->get_pin_name().match("target") && !_pin->has_any_connections())
+        {
+            const String target_class = _pin->get_property_info().class_name;
+            const String base_type = _pin->get_owning_node()->get_orchestration()->get_base_type();
+            if (!target_class.is_empty() && ClassDB::is_parent_class(base_type, target_class))
+            {
+                if (!_pin->has_any_connections() || !Object::cast_to<OScriptNodeVariable>(_pin->get_owning_node()))
+                {
+                    _label->set_text("[Self]");
+                    return;
+                }
+            }
+        }
+    }
+
+    OrchestratorGraphNodePin::_update_label();
 }

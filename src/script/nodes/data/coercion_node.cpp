@@ -17,6 +17,7 @@
 #include "coercion_node.h"
 
 #include "common/logger.h"
+#include "common/property_utils.h"
 #include "common/variant_utils.h"
 
 class OScriptNodeCoercionInstance : public OScriptNodeInstance
@@ -24,7 +25,7 @@ class OScriptNodeCoercionInstance : public OScriptNodeInstance
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeCoercion);
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.copy_input_to_output(0, 0);
         return 0;
@@ -43,7 +44,7 @@ void OScriptNodeCoercion::post_initialize()
     _add_source_target_listeners();
 
     Ref<OScriptNodePin> input = _get_input_pin();
-    if (!input.is_valid())
+    if (input.is_valid())
         _left = input->get_type();
 
     Ref<OScriptNodePin> output = _get_output_pin();
@@ -61,8 +62,8 @@ void OScriptNodeCoercion::post_placed_new_node()
 
 void OScriptNodeCoercion::allocate_default_pins()
 {
-    create_pin(PD_Input, "input", _left)->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::HIDE_LABEL);
-    create_pin(PD_Output, "output", _right)->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::HIDE_LABEL);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("input", _left))->hide_label();
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("output", _right))->hide_label();
 }
 
 String OScriptNodeCoercion::get_tooltip_text() const
@@ -77,11 +78,10 @@ String OScriptNodeCoercion::get_node_title() const
     return " "; // todo: hack trick to avoid apply a title for now
 }
 
-OScriptNodeInstance* OScriptNodeCoercion::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeCoercion::instantiate()
 {
     OScriptNodeCoercionInstance* i = memnew(OScriptNodeCoercionInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 
@@ -114,7 +114,7 @@ Ref<OScriptNodePin> OScriptNodeCoercion::_get_source_node_pin()
     if (!input.is_valid())
         return {};
 
-    Vector<Ref<OScriptNodePin>> connections = get_owning_script()->get_connections(input.ptr());
+    Vector<Ref<OScriptNodePin>> connections = get_orchestration()->get_connections(input.ptr());
     if (connections.is_empty())
         return {};
 
@@ -127,7 +127,7 @@ Ref<OScriptNodePin> OScriptNodeCoercion::_get_target_node_pin()
     if (!output.is_valid())
         return {};
 
-    Vector<Ref<OScriptNodePin>> connections = get_owning_script()->get_connections(output.ptr());
+    Vector<Ref<OScriptNodePin>> connections = get_orchestration()->get_connections(output.ptr());
     if (connections.is_empty())
         return {};
 
@@ -164,7 +164,7 @@ void OScriptNodeCoercion::_on_source_pin_changed(const Ref<OScriptNodePin>& p_pi
 
     // If source node is removed, remove this node
     if (!_get_source_node_pin().is_valid())
-        _script->remove_node(_id);
+        get_orchestration()->remove_node(_id);
 }
 
 void OScriptNodeCoercion::_on_target_pin_changed(const Ref<OScriptNodePin>& p_pin)
@@ -175,5 +175,5 @@ void OScriptNodeCoercion::_on_target_pin_changed(const Ref<OScriptNodePin>& p_pi
 
     // if target node is removed, remove this node
     if (!_get_target_node_pin().is_valid())
-         _script->remove_node(_id);
+         get_orchestration()->remove_node(_id);
 }

@@ -16,20 +16,25 @@
 //
 #include "random.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeRandomInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeRandom);
 
-    RandomNumberGenerator _random;
+    Ref<RandomNumberGenerator> _random;
     int _possibilities{ 0 };
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         if (_possibilities == 0)
             return -1;
 
-        return _random.randi_range(0, _possibilities - 1);
+        if (!_random.is_valid())
+            _random.instantiate();
+
+        return _random->randi_range(0, _possibilities - 1);
     }
 };
 
@@ -71,19 +76,12 @@ bool OScriptNodeRandom::_set(const StringName& p_name, const Variant& p_value)
     return false;
 }
 
-void OScriptNodeRandom::post_initialize()
-{
-    reconstruct_node();
-    super::post_initialize();
-}
-
 void OScriptNodeRandom::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
 
     for (int i = 0; i < _possibilities; i++)
-        create_pin(PD_Output, _get_pin_name_given_index(i))
-            ->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
+        create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec(_get_pin_name_given_index(i)))->show_label();
 
     super::allocate_default_pins();
 }
@@ -109,11 +107,10 @@ void OScriptNodeRandom::pin_default_value_changed(const Ref<OScriptNodePin>& p_p
     super::pin_default_value_changed(p_pin);
 }
 
-OScriptNodeInstance* OScriptNodeRandom::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeRandom::instantiate()
 {
     OScriptNodeRandomInstance* i = memnew(OScriptNodeRandomInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_possibilities = _possibilities;
     return i;
 }

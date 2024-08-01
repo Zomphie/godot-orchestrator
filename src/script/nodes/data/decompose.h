@@ -35,6 +35,7 @@ class OScriptNodeDecompose : public OScriptNode
     // todo: this node needs to have its rendering fixed
 
     ORCHESTRATOR_NODE_CLASS(OScriptNodeDecompose, OScriptNode);
+    static void _bind_methods();
 
     using TypeMap = HashMap<Variant::Type, Array>;
 
@@ -42,18 +43,17 @@ protected:
     Variant::Type _type;              //! Transient type to pass from creation metadata
     static TypeMap _type_components;  //! Various types and respective components
 
-    static void _bind_methods();
-
 public:
     //~ Begin OScriptNode Interface
     void post_initialize() override;
-    void post_placed_new_node() override;
     void allocate_default_pins() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "pure_function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    String get_help_topic() const override;
+    PackedStringArray get_keywords() const override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
 };

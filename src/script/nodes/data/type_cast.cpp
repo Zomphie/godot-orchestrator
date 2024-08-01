@@ -16,6 +16,7 @@
 //
 #include "type_cast.h"
 
+#include "common/property_utils.h"
 #include "common/string_utils.h"
 
 class OScriptNodeTypeCastInstance : public OScriptNodeInstance
@@ -24,13 +25,13 @@ class OScriptNodeTypeCastInstance : public OScriptNodeInstance
     StringName _target_class;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context)
+    int step(OScriptExecutionContext& p_context) override
     {
         Variant& input = p_context.get_input(0);
         if (input.get_type() == Variant::OBJECT)
         {
             Object* object = Object::cast_to<Object>(input);
-            if (ClassDB::is_parent_class(object->get_class(), _target_class))
+            if (object && ClassDB::is_parent_class(object->get_class(), _target_class))
             {
                 p_context.set_output(0, &input);
                 return 0;
@@ -66,6 +67,19 @@ bool OScriptNodeTypeCast::_set(const StringName& p_name, const Variant& p_value)
         return true;
     }
     return false;
+}
+
+void OScriptNodeTypeCast::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - encode class type in the output pin
+        Ref<OScriptNodePin> output = find_pin("output", PD_Output);
+        if (!output.is_valid() || output->get_property_info().class_name.is_empty())
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
 }
 
 String OScriptNodeTypeCast::_get_target_type() const
@@ -122,18 +136,14 @@ void OScriptNodeTypeCast::post_node_autowired(const Ref<OScriptNode>& p_node, EP
 
 void OScriptNodeTypeCast::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Input, "instance", Variant::OBJECT)->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::OBJECT);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_object("instance"));
 
-    Ref<OScriptNodePin> yes = create_pin(PD_Output, "yes");
-    yes->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("yes"))->show_label();
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("no"))->show_label();
 
-    Ref<OScriptNodePin> no = create_pin(PD_Output, "no");
-    no->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
-
-    Ref<OScriptNodePin> output = create_pin(PD_Output, "output", Variant::OBJECT);
-    output->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::OBJECT | OScriptNodePin::Flags::NO_CAPITALIZE);
-    output->set_label("as " + StringUtils::default_if_empty(_target_type, "Object"));
+    Ref<OScriptNodePin> output = create_pin(PD_Output, PT_Data, PropertyUtils::make_object("output", _target_type));
+    output->set_label("as " + StringUtils::default_if_empty(_target_type, "Object"), false);
 }
 
 String OScriptNodeTypeCast::get_tooltip_text() const
@@ -154,11 +164,10 @@ String OScriptNodeTypeCast::get_icon() const
     return StringUtils::default_if_empty(_target_type, super::get_icon());
 }
 
-OScriptNodeInstance* OScriptNodeTypeCast::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeTypeCast::instantiate()
 {
     OScriptNodeTypeCastInstance* i = memnew(OScriptNodeTypeCastInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_target_class = _target_type;
     return i;
 }
@@ -188,4 +197,17 @@ StringName OScriptNodeTypeCast::resolve_type_class(const Ref<OScriptNodePin>& p_
         }
     }
     return super::resolve_type_class(p_pin);
+}
+
+void OScriptNodeTypeCast::validate_node_during_build(BuildLog& p_log) const
+{
+    const Ref<OScriptNodePin> true_branch = find_pin("yes", PD_Output);
+    const Ref<OScriptNodePin> false_branch = find_pin("no", PD_Output);
+    if (true_branch.is_valid() && !true_branch->has_any_connections())
+    {
+        if (false_branch.is_valid() && !false_branch->has_any_connections())
+            p_log.error(this, "At least one output execution flow connection expected.");
+    }
+
+    super::validate_node_during_build(p_log);
 }

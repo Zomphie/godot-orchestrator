@@ -23,6 +23,7 @@
 class OScriptNodeVariable : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeVariable, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     StringName _variable_name;       //! Variable name reference
@@ -37,6 +38,9 @@ protected:
     /// Called when the script variable is modified
     void _on_variable_changed();
 
+    /// Allows subclasses to handle variable changed 
+    virtual void _variable_changed() { }
+
 public:
     OScriptNodeVariable();
 
@@ -46,6 +50,7 @@ public:
     String get_node_title_color_name() const override { return "variable"; }
     Ref<Resource> get_inspect_object() override { return _variable; }
     void initialize(const OScriptNodeInitContext& p_context) override;
+    void validate_node_during_build(BuildLog& p_log) const override;
     //~ End OScriptNode Interface
 
     Ref<OScriptVariable> get_variable() { return _variable; }

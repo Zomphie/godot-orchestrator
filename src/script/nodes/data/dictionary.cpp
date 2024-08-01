@@ -16,13 +16,15 @@
 //
 #include "dictionary.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeMakeDictionaryInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeMakeDictionary);
     int _count{ 0 };
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Dictionary result;
         for (int i = 0; i < _count; i += 2)
@@ -38,6 +40,52 @@ public:
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+class OScriptNodeDictionarySetInstance : public OScriptNodeInstance
+{
+    DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeDictionarySet);
+
+public:
+    int step(OScriptExecutionContext& p_context) override
+    {
+        Dictionary dict = p_context.get_input(0);
+
+        Variant oldValue;
+        bool replaced = false;
+
+        Variant key = p_context.get_input(1);
+        if (dict.has(key))
+        {
+            oldValue = dict[key];
+            replaced = true;
+        }
+        dict[key] = p_context.get_input(2);
+
+        p_context.set_output(0, dict);
+        p_context.set_output(1, replaced);
+        p_context.set_output(2, oldValue);
+
+        return 0;
+    }
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void OScriptNodeMakeDictionary::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        if (_element_count > 0)
+        {
+            // Fixup - make sure variant is encoded in pins
+            const Ref<OScriptNodePin> key = find_pin(_get_pin_name_given_index(0) + "_key");
+            if (key.is_valid() && !PropertyUtils::is_nil_no_variant(key->get_property_info()))
+                reconstruct_node();
+        }
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeMakeDictionary::post_initialize()
 {
     _element_count = find_pins(PD_Input).size() / 2;
@@ -50,16 +98,14 @@ void OScriptNodeMakeDictionary::allocate_default_pins()
     {
         const String element_prefix = _get_pin_name_given_index(i);
 
-        Ref<OScriptNodePin> key = create_pin(PD_Input, vformat("%s_key", element_prefix), Variant::NIL);
-        key->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-        key->set_label(vformat("Key %d", i));
+        Ref<OScriptNodePin> key = create_pin(PD_Input, PT_Data, PropertyUtils::make_variant(vformat("%s_key", element_prefix)));
+        key->set_label(vformat("Key %d", i), false);
 
-        Ref<OScriptNodePin> value = create_pin(PD_Input, vformat("%s_value", element_prefix), Variant::NIL);
-        value->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-        value->set_label(vformat("Value %d", i));
+        Ref<OScriptNodePin> value = create_pin(PD_Input, PT_Data, PropertyUtils::make_variant(vformat("%s_value", element_prefix)));
+        value->set_label(vformat("Value %d", i), false);
     }
 
-    create_pin(PD_Output, "dictionary", Variant::DICTIONARY)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("dictionary", Variant::DICTIONARY));
     super::allocate_default_pins();
 }
 
@@ -78,11 +124,10 @@ String OScriptNodeMakeDictionary::get_icon() const
     return "Dictionary";
 }
 
-OScriptNodeInstance* OScriptNodeMakeDictionary::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeMakeDictionary::instantiate()
 {
     OScriptNodeMakeDictionaryInstance* i = memnew(OScriptNodeMakeDictionaryInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_count = _element_count * 2;
     return i;
 }
@@ -130,4 +175,47 @@ void OScriptNodeMakeDictionary::remove_dynamic_pin(const Ref<OScriptNodePin>& p_
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeDictionarySet::post_initialize()
+{
+    reconstruct_node();
+    super::post_initialize();
+}
+
+void OScriptNodeDictionarySet::allocate_default_pins()
+{
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("target", Variant::DICTIONARY));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_variant("key"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_variant("value"));
+
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("dictionary", Variant::DICTIONARY));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("replaced", Variant::BOOL));
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_variant("old_value"));
+
+    super::allocate_default_pins();
+}
+
+String OScriptNodeDictionarySet::get_tooltip_text() const
+{
+    return "Set a dictionary key/value pair.";
+}
+
+String OScriptNodeDictionarySet::get_node_title() const
+{
+    return "Set Dictionary Item";
+}
+
+String OScriptNodeDictionarySet::get_icon() const
+{
+    return "Dictionary";
+}
+
+OScriptNodeInstance* OScriptNodeDictionarySet::instantiate()
+{
+    OScriptNodeDictionarySetInstance* i = memnew(OScriptNodeDictionarySetInstance);
+    i->_node = this;
+    return i;
+}

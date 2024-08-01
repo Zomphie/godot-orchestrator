@@ -23,10 +23,15 @@
 /// Creates a new array
 class OScriptNodeMakeArray : public OScriptEditablePinNode
 {
-    ORCHESTRATOR_NODE_CLASS(OScriptNodeMakeArray, OScriptEditablePinNode)
+    ORCHESTRATOR_NODE_CLASS(OScriptNodeMakeArray, OScriptEditablePinNode);
+    static void _bind_methods() { }
 
 protected:
     int _element_count{ 0 };
+
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -37,7 +42,7 @@ public:
     String get_node_title_color_name() const override { return "constants_and_literals"; }
     String get_icon() const override;
     void pin_default_value_changed(const Ref<OScriptNodePin>& p_pin) override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 
     //~ Begin OScriptEditablePinNode Interface
@@ -52,11 +57,16 @@ public:
 class OScriptNodeArrayGet : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeArrayGet, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     Variant::Type _collection_type{ Variant::ARRAY };
     Variant::Type _index_type{ Variant::NIL };
     String _collection_name{ "Array" };
+
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -66,7 +76,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
 };
@@ -75,11 +85,16 @@ public:
 class OScriptNodeArraySet : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeArraySet, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     Variant::Type _collection_type{ Variant::ARRAY };
     Variant::Type _index_type{ Variant::NIL };
     String _collection_name{ "Array" };
+
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -89,7 +104,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
 };
@@ -98,6 +113,12 @@ public:
 class OScriptNodeArrayFind : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeArrayFind, OScriptNode);
+    static void _bind_methods() { }
+
+protected:
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -106,7 +127,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 
@@ -114,6 +135,7 @@ public:
 class OScriptNodeArrayClear : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeArrayClear, OScriptNode);
+    static void _bind_methods() { }
 
 public:
     //~ Begin OScriptNode Interface
@@ -122,7 +144,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 
@@ -131,6 +153,7 @@ public:
 class OScriptNodeArrayAppend : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeArrayAppend, OScriptNode);
+    static void _bind_methods() { }
 
 public:
     //~ Begin OScriptNode Interface
@@ -139,7 +162,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 
@@ -147,6 +170,12 @@ public:
 class OScriptNodeArrayAddElement : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeArrayAddElement, OScriptNode);
+    static void _bind_methods() { }
+
+protected:
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -155,7 +184,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 
@@ -163,6 +192,12 @@ public:
 class OScriptNodeArrayRemoveElement : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeArrayRemoveElement, OScriptNode);
+    static void _bind_methods() { }
+
+protected:
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -171,7 +206,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 
@@ -179,6 +214,7 @@ public:
 class OScriptNodeArrayRemoveIndex : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeArrayRemoveIndex, OScriptNode);
+    static void _bind_methods() { }
 
 public:
     //~ Begin OScriptNode Interface
@@ -187,7 +223,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "function_call"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 

@@ -16,8 +16,11 @@
 //
 #include "delay.h"
 
-#include <godot_cpp/classes/main_loop.hpp>
+#include "common/property_utils.h"
+#include "script/vm/script_state.h"
+
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/main_loop.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/classes/scene_tree_timer.hpp>
 
@@ -27,7 +30,7 @@ class OScriptNodeDelayInstance : public OScriptNodeInstance
 public:
     int get_working_memory_size() const override { return 1; }
 
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         // Resume mode means that the delay has concluded, it's safe to proceed.
         if (p_context.get_step_mode() == STEP_MODE_RESUME)
@@ -36,7 +39,7 @@ public:
         SceneTree *tree = Object::cast_to<SceneTree>(Engine::get_singleton()->get_main_loop());
         if (!tree)
         {
-            p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_METHOD, "Main loop is not a scene tree");
+            p_context.set_error("Main loop is not a scene tree.");
             return -1;
         }
 
@@ -59,7 +62,10 @@ public:
 
 void OScriptNodeDelay::post_initialize()
 {
-    _duration = find_pin("duration", PD_Input)->get_effective_default_value();
+    const Ref<OScriptNodePin> duration  = find_pin("duration", PD_Input);
+    if (duration.is_valid())
+        _duration = duration->get_effective_default_value();
+
     super::post_initialize();
 }
 
@@ -80,9 +86,9 @@ void OScriptNodeDelay::reallocate_pins_during_reconstruction(const Vector<Ref<OS
 
 void OScriptNodeDelay::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Input, "duration", Variant::FLOAT, _duration)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("duration", Variant::FLOAT), _duration);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
 
     super::allocate_default_pins();
 }
@@ -102,10 +108,9 @@ String OScriptNodeDelay::get_icon() const
     return "Timer";
 }
 
-OScriptNodeInstance* OScriptNodeDelay::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeDelay::instantiate()
 {
     OScriptNodeDelayInstance *i = memnew(OScriptNodeDelayInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }

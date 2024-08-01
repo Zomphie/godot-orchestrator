@@ -16,6 +16,7 @@
 //
 #include "property_set.h"
 
+#include "common/property_utils.h"
 #include "script/script.h"
 
 #include <godot_cpp/classes/node.hpp>
@@ -27,29 +28,29 @@ class OScriptNodePropertySetInstance : public OScriptNodeInstance
 
     OScriptNodeProperty::CallMode _call_mode;
     String _target_class;
-    String _property_name;
+    PropertyInfo _property;
     NodePath _node_path;
 
-    Node* _get_node_path_target()
+    Node* _get_node_path_target(OScriptExecutionContext& p_context)
     {
-        if (Node* owner = Object::cast_to<Node>(_instance->get_owner()))
+        if (Node* owner = Object::cast_to<Node>(p_context.get_owner()))
             return owner->get_tree()->get_current_scene()->get_node_or_null(_node_path);
         return nullptr;
     }
 
 public:
-    int step(OScriptNodeExecutionContext& p_context)
+    int step(OScriptExecutionContext& p_context)
     {
         const Variant& input = p_context.get_input(0);
         switch (_call_mode)
         {
             case OScriptNodeProperty::CALL_SELF:
-                _instance->get_owner()->set(_property_name, input);
+                p_context.get_owner()->set(_property.name, input);
                 break;
 
             case OScriptNodeProperty::CALL_NODE_PATH:
-                if (Node* target = _get_node_path_target())
-                    target->set(_property_name, input);
+                if (Node* target = _get_node_path_target(p_context))
+                    target->set(_property.name, input);
                 break;
 
             case OScriptNodeProperty::CALL_INSTANCE:
@@ -57,7 +58,7 @@ public:
                 if (instance.get_type() == Variant::OBJECT)
                 {
                     Object* obj = Object::cast_to<Object>(instance);
-                    obj->set(_property_name, p_context.get_input(1));
+                    obj->set(_property.name, p_context.get_input(1));
                 }
                 break;
         }
@@ -69,36 +70,45 @@ public:
 
 void OScriptNodePropertySet::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
 
     if (_call_mode == CALL_INSTANCE)
-        create_pin(PD_Input, "target", Variant::OBJECT)->set_flags(OScriptNodePin::Flags::DATA);
+    {
+        Ref<OScriptNodePin> target = create_pin(PD_Input, PT_Data, PropertyUtils::make_object("target", _base_type));
+        target->set_label(_base_type);
+        target->no_pretty_format();
+    }
 
-    create_pin(PD_Input, _property_name, _property_type)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Data, _property);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
 }
 
 String OScriptNodePropertySet::get_tooltip_text() const
 {
-    if (!_property_name.is_empty())
-        return vformat("Set the value for the property '%s'", _property_name);
-    else
-        return "Sets the value for a given property";
+    if (!_property.name.is_empty())
+    {
+        String tooltip = vformat("Sets the value of the property '%s'", _property.name);
+        if (!_node_path.is_empty())
+            tooltip += "\nNode Path: " + _node_path;
+
+        return tooltip;
+    }
+
+    return "Sets the value for a given property";
 }
 
 String OScriptNodePropertySet::get_node_title() const
 {
-    return vformat("Set %s%s", _property_name.capitalize(), _call_mode == CALL_SELF ? " (Self)" : "");
+    return vformat("Set %s%s", _property.name.capitalize(), _call_mode == CALL_SELF ? " (Self)" : "");
 }
 
-OScriptNodeInstance* OScriptNodePropertySet::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodePropertySet::instantiate()
 {
     OScriptNodePropertySetInstance* i = memnew(OScriptNodePropertySetInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_call_mode = _call_mode;
     i->_target_class = _base_type;
-    i->_property_name = _property_name;
+    i->_property = _property;
     i->_node_path = _node_path;
     return i;
 }

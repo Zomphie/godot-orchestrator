@@ -17,6 +17,7 @@
 #include "input_action.h"
 
 #include "common/dictionary_utils.h"
+#include "common/property_utils.h"
 #include "common/string_utils.h"
 
 #include <godot_cpp/classes/input.hpp>
@@ -30,12 +31,24 @@ class OScriptNodeInputActionInstance : public OScriptNodeInstance
     OScriptNodeInputAction::ActionMode _mode;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Input* input = Input::get_singleton();
         if (!input)
         {
-            p_context.set_error(GDEXTENSION_CALL_ERROR_INSTANCE_IS_NULL, "Failed to find Input singleton");
+            p_context.set_error("Unable to locate Input singleton.");
+            return -1 | STEP_FLAG_END;
+        }
+
+        if (_action_name.is_empty())
+        {
+            p_context.set_error("An action name must be specified.");
+            return -1 | STEP_FLAG_END;
+        }
+
+        if (_action_name.is_empty())
+        {
+            p_context.set_error("An action name must be specified.");
             return -1 | STEP_FLAG_END;
         }
 
@@ -62,6 +75,14 @@ public:
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void OScriptNodeInputAction::_settings_changed()
+{
+    // If the node is selected and the user modifies the project settings, this makes sure that the action
+    // list will be regenerated in the InspectorDock to reflect the changes potentially to any new InputMap
+    // actions that were defined.
+    notify_property_list_changed();
+}
 
 PackedStringArray OScriptNodeInputAction::_get_action_names() const
 {
@@ -143,11 +164,31 @@ void OScriptNodeInputAction::_bind_methods()
     BIND_ENUM_CONSTANT(AM_JUST_RELEASED)
 }
 
+void OScriptNodeInputAction::post_initialize()
+{
+    if (_is_in_editor())
+    {
+        ProjectSettings* settings = ProjectSettings::get_singleton();
+        settings->connect("settings_changed", callable_mp(this, &OScriptNodeInputAction::_settings_changed));
+    }
+
+    super::post_initialize();
+}
+
+void OScriptNodeInputAction::post_placed_new_node()
+{
+    if (_is_in_editor())
+    {
+        ProjectSettings* settings = ProjectSettings::get_singleton();
+        settings->connect("settings_changed", callable_mp(this, &OScriptNodeInputAction::_settings_changed));
+    }
+
+    super::post_placed_new_node();
+}
+
 void OScriptNodeInputAction::allocate_default_pins()
 {
-    Ref<OScriptNodePin> state = create_pin(PD_Output, "state", Variant::BOOL);
-    state->set_flags(OScriptNodePin::Flags::DATA);
-    state->set_label(_get_mode());
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("state", Variant::BOOL))->set_label(_get_mode());
 
     super::allocate_default_pins();
 }
@@ -167,12 +208,21 @@ String OScriptNodeInputAction::get_icon() const
     return "InputEventAction";
 }
 
-OScriptNodeInstance* OScriptNodeInputAction::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeInputAction::instantiate()
 {
     OScriptNodeInputActionInstance* i = memnew(OScriptNodeInputActionInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_action_name = _action_name;
     i->_mode = ActionMode(_mode);
     return i;
+}
+
+void OScriptNodeInputAction::validate_node_during_build(BuildLog& p_log) const
+{
+    if (_action_name.is_empty())
+        p_log.error(this, "No input action name specified.");
+    else if (!_get_action_names().has(_action_name))
+        p_log.error(this, "Input action '" + _action_name + "' is not defined.");
+
+    super::validate_node_during_build(p_log);
 }

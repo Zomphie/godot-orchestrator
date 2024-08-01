@@ -16,7 +16,9 @@
 //
 #include "dialogue_message.h"
 
-#include "dialogue_choice.h"
+#include "common/property_utils.h"
+#include "script/nodes/dialogue/dialogue_choice.h"
+#include "script/vm/script_state.h"
 
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/node.hpp>
@@ -45,7 +47,7 @@ class OScriptNodeDialogueMessageInstance : public OScriptNodeInstance
 public:
     int get_working_memory_size() const override { return 1; }
 
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         if (p_context.get_step_mode() == STEP_MODE_RESUME)
         {
@@ -67,7 +69,7 @@ public:
             bool is_default = String(scene_file).match(DEFAULT_SCENE);
             if (is_default || (!is_default && !_file_exists(DEFAULT_SCENE)))
             {
-                p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_METHOD, "Failed to find default scene.");
+                p_context.set_error(vformat("Failed to find default scene: %s", DEFAULT_SCENE));
                 return -1;
             }
 
@@ -78,7 +80,7 @@ public:
         Ref<PackedScene> scene = ResourceLoader::get_singleton()->load(scene_file);
         if (scene.is_valid())
         {
-            if (Node* node = Object::cast_to<Node>(_instance->get_owner()))
+            if (Node* node = Object::cast_to<Node>(p_context.get_owner()))
             {
                 _ui = scene->instantiate();
 
@@ -118,12 +120,21 @@ public:
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeDialogueMessage::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 && p_current_version >= 2)
+    {
+        // Fixup - make sure the scene pin has a hint string encoded
+        Ref<OScriptNodePin> scene = find_pin("scene", PD_Input);
+        if (scene.is_valid() && scene->get_property_info().hint_string.is_empty())
+            reconstruct_node();
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
 void OScriptNodeDialogueMessage::post_initialize()
 {
-    Ref<OScriptNodePin> scene = find_pin("scene", PD_Input);
-    if (scene.is_valid())
-        scene->set_file_types("*.scn,*.tscn; Scene Files");
-
     for (const Ref<OScriptNodePin>& pin : find_pins(PD_Input))
     {
         if (pin->get_pin_name().begins_with("choice_"))
@@ -134,44 +145,29 @@ void OScriptNodeDialogueMessage::post_initialize()
 
 void OScriptNodeDialogueMessage::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_multiline("name"))->set_label("Speaker");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_multiline("text"))->set_label("Message");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_file("scene", "*.scn,*.tscn; Scene Files"), "");
 
-    Ref<OScriptNodePin> name = create_pin(PD_Input, "name", Variant::STRING);
-    name->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::MULTILINE);
-    name->set_label("Speaker");
-
-    Ref<OScriptNodePin> text = create_pin(PD_Input, "text", Variant::STRING);
-    text->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::MULTILINE);
-    text->set_label("Message");
-
-    Ref<OScriptNodePin> scene = create_pin(PD_Input, "scene", Variant::STRING, "");
-    scene->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::FILE);
-    scene->set_file_types("*.scn,*.tscn; Scene Files");
-
-    if (_choices == 0)
+    if (_choices > 0)
     {
-        create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    }
-    else
-    {
-        // This is a hack to control row alignments with inputs.
         for (int i = 0; i < 4; i++)
-        {
-            Ref<OScriptNodePin> pin = create_pin(PD_Output, "temp_" + itos(i));
-            pin->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::HIDDEN);
-        }
+            create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("temp_" + itos(i)))->set_flag(OScriptNodePin::Flags::HIDDEN);
 
         for (int i = 0; i < _choices; i++)
         {
             const String pin_name = _get_pin_name_given_index(i);
-            Ref<OScriptNodePin> input = create_pin(PD_Input, pin_name, Variant::OBJECT);
-            input->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::IGNORE_DEFAULT);
-            input->set_target_class(OScriptNodeDialogueChoice::get_class_static());
+            const PropertyInfo pi = PropertyUtils::make_object(pin_name, OScriptNodeDialogueChoice::get_class_static());
 
-            Ref<OScriptNodePin> output = create_pin(PD_Output, vformat("%s_out", pin_name));
-            output->set_flags(OScriptNodePin::Flags::EXECUTION);
+            Ref<OScriptNodePin> input = create_pin(PD_Input, PT_Data, pi);
+            input->set_flag(OScriptNodePin::Flags::IGNORE_DEFAULT);
+
+            create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec(vformat("%s_out", pin_name)));
         }
     }
+    else
+        create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
 
     super::allocate_default_pins();
 }
@@ -186,7 +182,7 @@ String OScriptNodeDialogueMessage::get_node_title() const
     return "Show Dialogue Message";
 }
 
-bool OScriptNodeDialogueMessage::validate_node_during_build() const
+void OScriptNodeDialogueMessage::validate_node_during_build(BuildLog& p_log) const
 {
     Ref<OScriptNodePin> scene = find_pin("scene", PD_Input);
     if (scene.is_valid())
@@ -195,20 +191,24 @@ bool OScriptNodeDialogueMessage::validate_node_during_build() const
         if (!file_name.strip_edges().is_empty())
         {
             if (!FileAccess::file_exists(file_name))
-            {
-                ERR_PRINT("DialogueMessage node scene file '" + file_name + "' not found.");
-                return false;
-            }
+                p_log.error(this, vformat("File '%s' not found.", file_name));
         }
     }
-    return true;
+
+    for (int i = 0; i < _choices; i++)
+    {
+        Ref<OScriptNodePin> choice = find_pin(_get_pin_name_given_index(i), PD_Input);
+        if (choice.is_valid() && !choice->has_any_connections())
+            p_log.error(this, choice, "Requires a connection.");
+    }
+
+    super::validate_node_during_build(p_log);
 }
 
-OScriptNodeInstance* OScriptNodeDialogueMessage::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeDialogueMessage::instantiate()
 {
     OScriptNodeDialogueMessageInstance* i = memnew(OScriptNodeDialogueMessageInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_choices = _choices;
     return i;
 }

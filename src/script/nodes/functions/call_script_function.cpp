@@ -19,11 +19,8 @@
 void OScriptNodeCallScriptFunction::_on_function_changed()
 {
     if (_function.is_valid())
-    {
-        _reference.name = _function->get_function_name();
         _reference.method = _function->get_method_info();
-        _reference.return_type = _function->get_return_type();
-    }
+
     reconstruct_node();
 }
 
@@ -31,16 +28,16 @@ void OScriptNodeCallScriptFunction::post_initialize()
 {
     if (_reference.guid.is_valid())
     {
-        _function = get_owning_script()->find_function(_reference.guid);
+        _function = get_orchestration()->find_function(_reference.guid);
         if (_function.is_valid())
         {
-            _reference.name = _function->get_function_name();
-            _reference.return_type = _function->get_return_type();
             _reference.method = _function->get_method_info();
             _function_flags.set_flag(FF_IS_SELF);
             if (_is_in_editor())
             {
-                _function->connect("changed", callable_mp(this, &OScriptNodeCallScriptFunction::_on_function_changed));
+                Callable callable = callable_mp(this, &OScriptNodeCallScriptFunction::_on_function_changed);
+                if (!_function->is_connected("changed", callable))
+                    _function->connect("changed", callable);
             }
         }
     }
@@ -51,18 +48,22 @@ void OScriptNodeCallScriptFunction::post_placed_new_node()
 {
     super::post_placed_new_node();
     if (_function.is_valid() && _is_in_editor())
-        _function->connect("changed", callable_mp(this, &OScriptNodeCallScriptFunction::_on_function_changed));
+    {
+        Callable callable = callable_mp(this, &OScriptNodeCallScriptFunction::_on_function_changed);
+        if (!_function->is_connected("changed", callable))
+            _function->connect("changed", callable);
+    }
 }
 
 String OScriptNodeCallScriptFunction::get_tooltip_text() const
 {
-    return vformat("Target is %s", get_owning_script()->get_base_type());
+    return vformat("Target is %s", get_orchestration()->get_base_type());
 }
 
 String OScriptNodeCallScriptFunction::get_node_title() const
 {
     if (_function.is_valid())
-        return vformat("Call %s", _function->get_function_name().capitalize());
+        return vformat("%s", _function->get_function_name().capitalize());
 
     return super::get_node_title();
 }
@@ -80,25 +81,19 @@ bool OScriptNodeCallScriptFunction::can_jump_to_definition() const
     return get_jump_target_for_double_click() != nullptr;
 }
 
-bool OScriptNodeCallScriptFunction::validate_node_during_build() const
+void OScriptNodeCallScriptFunction::validate_node_during_build(BuildLog& p_log) const
 {
-    if (!super::validate_node_during_build())
-        return false;
+    super::validate_node_during_build(p_log);
 
     if (!_function.is_valid())
-    {
-        ERR_PRINT("There is no function defined for the script function call node.");
-        return false;
-    }
-
-    return true;
+        p_log.error(this, "There is no function instance defined.");
 }
 
 bool OScriptNodeCallScriptFunction::can_inspect_node_properties() const
 {
     if (_function.is_valid() && !_function->get_function_name().is_empty())
     {
-        if (get_owning_script()->has_graph(_function->get_function_name()))
+        if (get_orchestration()->has_graph(_function->get_function_name()))
             return true;
     }
     return false;
@@ -109,13 +104,11 @@ void OScriptNodeCallScriptFunction::initialize(const OScriptNodeInitContext& p_c
     ERR_FAIL_COND_MSG(!p_context.method, "Failed to initialize CallScriptFunction without a MethodInfo");
 
     const MethodInfo& mi = p_context.method.value();
-    _function = get_owning_script()->find_function(mi.name);
+    _function = get_orchestration()->find_function(mi.name);
     if (_function.is_valid())
     {
         _reference.guid = _function->get_guid();
-        _reference.name = _function->get_function_name();
         _reference.method = _function->get_method_info();
-        _reference.return_type = _function->get_return_type();
         _function_flags.set_flag(FF_IS_SELF);
     }
 

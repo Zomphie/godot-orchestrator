@@ -16,16 +16,21 @@
 //
 #include "chance.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeChanceInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeChance);
-    RandomNumberGenerator _random;
+    Ref<RandomNumberGenerator> _random;
     int _chance{ 0 };
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
-        const int _calculated_chance = _random.randi_range(0, 100);
+        if (!_random.is_valid())
+            _random.instantiate();
+
+        const int _calculated_chance = _random->randi_range(0, 100);
         return _calculated_chance <= _chance ? 0 : 1;
     }
 };
@@ -66,15 +71,10 @@ void OScriptNodeChance::post_initialize()
 
 void OScriptNodeChance::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
 
-    Ref<OScriptNodePin> within = create_pin(PD_Output, "Within");
-    within->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
-    within->set_label(vformat("%d%%", _chance));
-
-    Ref<OScriptNodePin> outside = create_pin(PD_Output, "Outside");
-    outside->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
-    outside->set_label(vformat("%d%%", 100 - _chance));
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("Within"))->set_label(vformat("%d%%", _chance));
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("Outside"))->set_label(vformat("%d%%", 100 - _chance));
 
     super::allocate_default_pins();
 }
@@ -89,11 +89,10 @@ String OScriptNodeChance::get_node_title() const
     return "Chance";
 }
 
-OScriptNodeInstance* OScriptNodeChance::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeChance::instantiate()
 {
     OScriptNodeChanceInstance *i = memnew(OScriptNodeChanceInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_chance = _chance;
     return i;
 }

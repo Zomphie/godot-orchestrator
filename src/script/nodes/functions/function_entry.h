@@ -27,6 +27,7 @@
 class OScriptNodeFunctionEntry : public OScriptNodeFunctionTerminator
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeFunctionEntry, OScriptNodeFunctionTerminator);
+    static void _bind_methods() { }
 
 protected:
     virtual bool _is_user_defined() const { return true; }
@@ -41,10 +42,15 @@ public:
     String get_tooltip_text() const override;
     void post_paste_node() override;
     bool draw_node_as_entry() const override { return true; }
+    bool can_duplicate() const override { return false; }
     bool can_create_user_defined_pin(EPinDirection p_direction, String& r_message) override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
+
+    /// Gets the execution pin for this function entry node
+    /// @return the execution pin
+    Ref<OScriptNodePin> get_execution_pin() const;
 };
 
 #endif  // ORCHESTRATOR_FUNCTION_ENTRY_H

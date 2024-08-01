@@ -16,28 +16,99 @@
 //
 #include "scene_utils.h"
 
+#include "editor/plugins/orchestrator_editor_plugin.h"
+#include "script/script_server.h"
+
+#include <godot_cpp/classes/editor_interface.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/font.hpp>
+#include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/style_box.hpp>
 #include <godot_cpp/classes/theme.hpp>
 #include <godot_cpp/classes/theme_db.hpp>
-#include <godot_cpp/classes/window.hpp>
+#include <godot_cpp/classes/v_box_container.hpp>
 
 namespace SceneUtils
 {
-    Ref<Texture2D> get_icon(Control* p_control, const String& p_icon_name)
+    Ref<Texture2D> _get_class_or_script_icon(const String& p_class_name, const Ref<Script>& p_script, const String& p_fallback, bool p_fallback_script_to_theme)
     {
-        if (!p_icon_name.begins_with("res://"))
-            return p_control->get_theme_icon(p_icon_name, "EditorIcons");
+        ERR_FAIL_COND_V_MSG(p_class_name.is_empty(), nullptr, "Class name cannot be empty.");
 
-        return ResourceLoader::get_singleton()->load(p_icon_name);
+        VBoxContainer* vbox = OrchestratorPlugin::get_singleton()->get_editor_interface()->get_editor_main_screen();
+        if (vbox->has_theme_icon(p_class_name, "EditorIcons"))
+            return vbox->get_theme_icon(p_class_name, "EditorIcons");
+
+        if (!p_fallback.is_empty() && vbox->has_theme_icon(p_fallback, "EditorIcons"))
+            return vbox->get_theme_icon(p_fallback, "EditorIcons");
+
+        if (ClassDB::class_exists(p_class_name))
+        {
+            const bool instantiable = ClassDB::can_instantiate(p_class_name);
+            if (ClassDB::is_parent_class(p_class_name, "Node"))
+                return vbox->get_theme_icon(instantiable ? "Node" : "NodeDisabled", "EditorIcons");
+
+            return vbox->get_theme_icon(instantiable ? "Object" : "ObjectDisabled", "EditorIcons");
+        }
+
+        if (ScriptServer::is_global_class(p_class_name))
+        {
+            const String icon = ScriptServer::get_global_class(p_class_name).icon_path;
+            if (!icon.is_empty())
+                return ResourceLoader::get_singleton()->load(icon);
+
+            return get_class_icon(ScriptServer::get_native_class_name(p_class_name));
+        }
+
+        return nullptr;
     }
 
-    Ref<Texture2D> get_icon(Window* p_window, const String& p_icon_name)
+    bool has_editor_icon(const String& p_icon_name)
     {
-        if (!p_icon_name.begins_with("res://"))
-            return p_window->get_theme_icon(p_icon_name, "EditorIcons");
+        VBoxContainer* vbox = OrchestratorPlugin::get_singleton()->get_editor_interface()->get_editor_main_screen();
+        return vbox->has_theme_icon(p_icon_name);
+    }
 
-        return ResourceLoader::get_singleton()->load(p_icon_name);
+    Color get_editor_color(const String& p_color_name, const String& p_category)
+    {
+        VBoxContainer* vbox = OrchestratorPlugin::get_singleton()->get_editor_interface()->get_editor_main_screen();
+        return vbox->get_theme_color(p_color_name, p_category);
+    }
+
+    Ref<Texture2D> get_icon(const String& p_name)
+    {
+        return ResourceLoader::get_singleton()->load(vformat("res://addons/orchestrator/editor/icons/%s.svg", p_name));
+    }
+
+    Ref<Texture2D> get_editor_icon(const String& p_icon_name)
+    {
+        VBoxContainer* vbox = OrchestratorPlugin::get_singleton()->get_editor_interface()->get_editor_main_screen();
+        return vbox->get_theme_icon(p_icon_name, "EditorIcons");
+    }
+
+    Ref<StyleBox> get_editor_style(const String& p_style_name)
+    {
+        VBoxContainer* vbox = OrchestratorPlugin::get_singleton()->get_editor_interface()->get_editor_main_screen();
+        return vbox->get_theme_stylebox(p_style_name, "EditorStyles");
+    }
+
+    Ref<Font> get_editor_font(const String& p_font_name)
+    {
+        VBoxContainer* vbox = OrchestratorPlugin::get_singleton()->get_editor_interface()->get_editor_main_screen();
+        return vbox->get_theme_font(p_font_name, "EditorFonts");
+    }
+
+    Ref<StyleBox> get_editor_stylebox(const String& p_stylebox_name, const String& p_class_name)
+    {
+        VBoxContainer* vbox = OrchestratorPlugin::get_singleton()->get_editor_interface()->get_editor_main_screen();
+        return vbox->get_theme_stylebox(p_stylebox_name, p_class_name);
+    }
+
+    Ref<Texture2D> get_class_icon(const String& p_class_name, const String& p_fallback)
+    {
+        Ref<Script> script;
+        return _get_class_or_script_icon(p_class_name, script, p_fallback, true);
     }
 
     String create_wrapped_tooltip_text(const String& p_tooltip_text, int p_width)
@@ -126,5 +197,87 @@ namespace SceneUtils
 
         // Traverse node's owner
         return get_relative_scene_root(p_node->get_owner());
+    }
+
+    Vector<Node*> find_all_nodes_for_script(Node* p_base, Node* p_current, const Ref<Script>& p_script)
+    {
+        Vector<Node*> nodes;
+        if (!p_current || (p_current->get_owner() != p_base && p_base != p_current))
+            return nodes;
+
+        Ref<Script> c = p_current->get_script();
+        if (c == p_script)
+            nodes.push_back(p_current);
+
+        for (int i = 0; i < p_current->get_child_count(); i++)
+        {
+            Vector<Node*> found = find_all_nodes_for_script(p_base, p_current->get_child(i), p_script);
+            nodes.append_array(found);
+        }
+
+        return nodes;
+    }
+
+    Vector<Node*> find_all_nodes_for_script_in_edited_scene(const Ref<Script>& p_script)
+    {
+        SceneTree* scene_tree = Object::cast_to<SceneTree>(Engine::get_singleton()->get_main_loop());
+        if (scene_tree)
+        {
+            Node* scene_root = scene_tree->get_edited_scene_root();
+            return find_all_nodes_for_script(scene_root, scene_root, p_script);
+        }
+        return {};
+    }
+
+    bool has_any_signals_connected_to_function(const String& p_function_name, const String& p_base_type,
+                                               const Vector<Node*>& p_nodes)
+    {
+        for (int i = 0; i < p_nodes.size(); i++)
+        {
+            Node* node = p_nodes[i];
+            TypedArray<Dictionary> incoming_connections = node->get_incoming_connections();
+            for (int j = 0; j < incoming_connections.size(); ++j)
+            {
+                const Dictionary& connection = incoming_connections[j];
+                const int connection_flags = connection["flags"];
+                if (!(connection_flags & Node::CONNECT_PERSIST))
+                    continue;
+
+                const Signal signal = connection["signal"];
+
+                // As deleted nodes are still accessible via the undo/redo system, check if they're in the tree
+                Node* source = Object::cast_to<Node>(ObjectDB::get_instance(signal.get_object_id()));
+                if (source && !source->is_inside_tree())
+                    continue;
+
+                const Callable callable = connection["callable"];
+                const StringName method = callable.get_method();
+
+                if (!ClassDB::class_has_method(p_base_type, method))
+                {
+                    if (p_function_name == method)
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    MarginContainer* add_margin_child(Node* p_parent, const String& p_label, Control* p_control, bool p_expand)
+    {
+        Label* label = memnew(Label);
+        label->set_theme_type_variation("HeaderSmall");
+        label->set_text(p_label);
+        p_parent->add_child(label);
+
+        MarginContainer* mc = memnew(MarginContainer);
+        mc->add_theme_constant_override("margin_left", 0);
+        mc->add_child(p_control, true);
+        p_parent->add_child(mc);
+
+        if (p_expand)
+            mc->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+
+        return mc;
     }
 }

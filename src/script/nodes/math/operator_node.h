@@ -24,7 +24,6 @@
 class OScriptNodeOperator : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeOperator, OScriptNode);
-
     static void _bind_methods();
 
 protected:
@@ -41,13 +40,15 @@ protected:
 
 public:
     //~ Begin OScriptNode Interface
+    void post_initialize() override;
     void allocate_default_pins() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "math_operations"; }
     String get_icon() const override { return "Translation"; }
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
+    void validate_node_during_build(BuildLog& p_log) const override;
     //~ End OScriptNode Interface
 
     /// Returns whether the type is supported.

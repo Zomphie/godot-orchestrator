@@ -101,6 +101,9 @@ def get_variant_type(variant_type):
         return "Variant::PACKED_VECTOR3_ARRAY"
     elif variant_type == "PackedColorArray":
         return "Variant::PACKED_COLOR_ARRAY"
+    # Godot 4.3+
+    elif variant_type == "PackedVector4Array":
+        return "Variant::PACKED_VECTOR4_ARRAY"
     return variant_type
 
 def get_operator_type(op_type):
@@ -264,50 +267,55 @@ def create_structs():
     print_indent("/// Describes a mapping between an enum name and value")
     print_struct("EnumValue", ["StringName name",
                                "StringName friendly_name",
-                               "int value"])
+                               "int value{ 0 }"])
 
     print_indent("/// Describes a definition of an Enumeration type")
     print_struct("EnumInfo", ["StringName name",
-                              "bool is_bitfield",
+                              "bool is_bitfield{ false }",
                               "Vector<EnumValue> values"])
 
     print_indent("/// Describes a function")
     print_struct("FunctionInfo", ["StringName name",
                                   "PropertyInfo return_val",
                                   "StringName category",
-                                  "bool is_vararg",
+                                  "bool is_vararg{ false }",
                                   "Vector<PropertyInfo> arguments"])
 
     print_indent("/// Describes an operator for a Godot type")
-    print_struct("OperatorInfo", ["VariantOperators::Code op",
+    print_struct("OperatorInfo", ["VariantOperators::Code op{ VariantOperators::OP_EQUAL }",
                                   "StringName code",
                                   "StringName name",
-                                  "Variant::Type left_type",
+                                  "Variant::Type left_type{ Variant::NIL }",
                                   "StringName left_type_name",
-                                  "Variant::Type right_type",
+                                  "Variant::Type right_type{ Variant::NIL }",
                                   "StringName right_type_name",
-                                  "Variant::Type return_type"])
+                                  "Variant::Type return_type{ Variant::NIL }"])
 
     print_indent("/// Describes a constructor definition")
     print_struct("ConstructorInfo", ["Vector<PropertyInfo> arguments"])
 
     print_indent("/// Describes a Constant definition")
     print_struct("ConstantInfo", ["StringName name",
-                                  "Variant::Type type",
+                                  "Variant::Type type{ Variant::NIL }",
                                   "Variant value"])
 
     print_indent("/// Builtin Godot Type details")
     print_struct("BuiltInType", ["StringName name",
-                                 "Variant::Type type",
-                                 "bool keyed",
-                                 "bool has_destructor",
+                                 "Variant::Type type{ Variant::NIL }",
+                                 "bool keyed{ false }",
+                                 "bool has_destructor{ false }",
                                  "Vector<OperatorInfo> operators",
                                  "Vector<ConstructorInfo> constructors",
                                  "Vector<MethodInfo> methods",
                                  "Vector<PropertyInfo> properties",
                                  "Vector<ConstantInfo> constants",
                                  "Vector<EnumInfo> enums",
-                                 "Variant::Type index_returning_type"])
+                                 "Variant::Type index_returning_type{ Variant::NIL }"])
+
+    print_indent("/// Describes a Godot Class")
+    print_struct("ClassInfo", ["StringName name",
+                               "Vector<StringName> bitfield_enums",
+                               "HashMap<StringName, int64_t> static_function_hashes"])
     indent_pop()
 
 
@@ -331,6 +339,9 @@ def create_loader_header():
     print_indent("")
     print_indent("/// Populates Utility Functions")
     print_indent("void prime_utility_functions();")
+    print_indent("")
+    print_indent("/// Populate class details")
+    print_indent("void prime_class_details();")
     indent_pop()
     print_indent("")
     print_indent("public:")
@@ -368,6 +379,8 @@ def create_db_header():
     print_indent("PackedStringArray _function_names;")
     print_indent("HashMap<StringName, FunctionInfo> _functions;")
     print_indent("")
+    print_indent("HashMap<StringName, ClassInfo> _classes;")
+    print_indent("")
     indent_pop()
     print_indent("public:")
     indent_push()
@@ -381,6 +394,7 @@ def create_db_header():
     print_indent("static PackedStringArray get_global_enum_names();")
     print_indent("static PackedStringArray get_global_enum_value_names();")
     print_indent("static EnumInfo get_global_enum(const StringName& p_enum_name);")
+    print_indent("static EnumInfo get_global_enum_by_value(const StringName& p_name);")
     print_indent("static EnumValue get_global_enum_value(const StringName& p_enum_value_name);")
     print_indent("")
     print_indent("static PackedStringArray get_math_constant_names();")
@@ -388,6 +402,11 @@ def create_db_header():
     print_indent("")
     print_indent("static PackedStringArray get_function_names();")
     print_indent("static FunctionInfo get_function(const StringName& p_name);")
+    print_indent("")
+    print_indent("static bool is_class_enum_bitfield(const StringName& p_class_name, const String& p_enum_name);")
+    print_indent("")
+    print_indent("static PackedStringArray get_static_function_names(const StringName& p_class_name);")
+    print_indent("static int64_t get_static_function_hash(const StringName& p_class_name, const StringName& p_function_name);")
     indent_pop()
     print_indent("};")
     print_indent("")
@@ -541,8 +560,16 @@ def write_builtin_type_methods(godot_type):
                 for arg in method["arguments"]:
                     if len(args) > 0:
                         args += ", "
-                    args += "{ " + get_variant_type(arg["type"]) + ", " + quote(arg["name"]) + " }"
-            print_indent("type.methods.push_back(_make_method(" + quote(method["name"]) + ", " + get_method_flags(method) + ", " + get_method_return_type(method) + ", { " + args + " }));")
+                    args += "{ " + get_variant_type(arg["type"]) + ", " + quote(arg["name"])
+                    if arg["type"] == "Variant":
+                        args += ", PROPERTY_HINT_NONE, \"\", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_NIL_IS_VARIANT"
+                    args += " }"
+
+            nil_is_variant = ""
+            if "return_type" in method and method["return_type"] == "Variant":
+                nil_is_variant = ", true"
+
+            print_indent("type.methods.push_back(_make_method(" + quote(method["name"]) + ", " + get_method_flags(method) + ", " + get_method_return_type(method) + ", { " + args + " }" + nil_is_variant + "));")
 
 
 def write_builtin_types(types):
@@ -593,13 +620,48 @@ def write_utility_functions(functions):
         print_indent("fi.is_vararg = " + str(func["is_vararg"]).lower() + ";")
         if 'arguments' in func:
             for arg in func["arguments"]:
-                print_indent("fi.arguments.push_back({ " + get_variant_type(arg["type"]) + ", " + quote(arg["name"]) + " });")
+                if arg["type"] == "Variant":
+                    print_indent("fi.arguments.push_back({ " + get_variant_type(arg["type"]) + ", " + quote(arg["name"]) + ", PROPERTY_HINT_NONE, \"\", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_NIL_IS_VARIANT });")
+                else:
+                    print_indent("fi.arguments.push_back({ " + get_variant_type(arg["type"]) + ", " + quote(arg["name"]) + " });")
         print_indent(DB + "_functions[" + quote(func["name"]) + "] = fi;")
         print_indent(DB + "_function_names.push_back(" + quote(func["name"]) + ");")
         indent_pop()
         print_indent("}")
     indent_pop()
 
+def write_class_details(classes):
+    indent_push()
+    print_indent("// Class details")
+    print_indent("// This currently only loads classes that have bitfield enums; use ClassDB otherwise.")
+    print_indent("// Can eventually be replaced by: https://github.com/godotengine/godot/pull/90368")
+    for clazz in classes:
+        class_output = False
+        if 'methods' in clazz:
+            for method in clazz["methods"]:
+                if method["is_static"]:
+                    if not class_output:
+                        print_indent("")
+                        print_indent("// " + clazz["name"])
+                        print_indent(DB + "_classes[" + quote(clazz["name"]) + "].name = " + quote(clazz["name"]) + ";")
+                        class_output = True
+                    print_indent(DB + "_classes[" + quote(clazz["name"]) + "].static_function_hashes[" + quote(method["name"]) + "] = " + str(method["hash"]) + ";")
+
+        enum_names = []
+        if 'enums' in clazz:
+            for enum in clazz["enums"]:
+                if enum["is_bitfield"]:
+                    enum_names.append(enum["name"])
+        if enum_names:
+            if not class_output:
+                print_indent("")
+                print_indent("// " + clazz["name"])
+                print_indent(DB + "_classes[" + quote(clazz["name"]) + "].name = " + quote(clazz["name"]) + ";")
+            for enum_name in enum_names:
+                print_indent(DB + "_classes[" + quote(clazz["name"]) + "].bitfield_enums.push_back(" + quote(enum_name) + ");")
+
+
+    indent_pop()
 
 def create_cpp():
     # Load the data
@@ -632,6 +694,12 @@ def create_cpp():
     print_indent("}")
     print_indent("")
 
+    print_indent("void ExtensionDBLoader::prime_class_details()")
+    print_indent("{")
+    write_class_details(data["classes"])
+    print_indent("}")
+    print_indent("")
+
     print_indent("void ExtensionDBLoader::prime()")
     print_indent("{")
     indent_push()
@@ -639,6 +707,7 @@ def create_cpp():
     print_indent("prime_global_enumerations();")
     print_indent("prime_builtin_classes();")
     print_indent("prime_utility_functions();")
+    print_indent("prime_class_details();")
     indent_pop()
     print_indent("}")
 

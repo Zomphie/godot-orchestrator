@@ -23,6 +23,7 @@
 class OScriptNodeRandom : public OScriptEditablePinNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeRandom, OScriptEditablePinNode);
+    static void _bind_methods() { }
 
 protected:
     int _possibilities = 1;
@@ -35,13 +36,12 @@ protected:
 
 public:
     //~ Begin OScriptNode Interface
-    void post_initialize() override;
     void allocate_default_pins() override;
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "flow_control"; }
     void pin_default_value_changed(const Ref<OScriptNodePin>& p_pin) override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 
     //~ Begin OScriptEditablePinNode Interface

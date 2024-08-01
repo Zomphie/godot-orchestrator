@@ -16,13 +16,15 @@
 //
 #include "resource_path.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeResourcePathInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeResourcePath);
     Variant _path;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         p_context.set_output(0, &_path);
         return 0;
@@ -57,17 +59,9 @@ bool OScriptNodeResourcePath::_set(const StringName& p_name, const Variant& p_va
     return false;
 }
 
-void OScriptNodeResourcePath::post_initialize()
-{
-    reconstruct_node();
-    super::post_initialize();
-}
-
 void OScriptNodeResourcePath::allocate_default_pins()
 {
-    Ref<OScriptNodePin> path = create_pin(PD_Output, "path", Variant::STRING);
-    path->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-    path->set_label(_path);
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("path", Variant::STRING))->set_label(_path, false);
 
     super::allocate_default_pins();
 }
@@ -87,11 +81,10 @@ String OScriptNodeResourcePath::get_icon() const
     return "ResourcePreloader";
 }
 
-OScriptNodeInstance* OScriptNodeResourcePath::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeResourcePath::instantiate()
 {
     OScriptNodeResourcePathInstance *i = memnew(OScriptNodeResourcePathInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_path = _path;
     return i;
 }
@@ -102,4 +95,12 @@ void OScriptNodeResourcePath::initialize(const OScriptNodeInitContext& p_context
         _path = p_context.resource_path.value();
 
     super::initialize(p_context);
+}
+
+void OScriptNodeResourcePath::validate_node_during_build(BuildLog& p_log) const
+{
+    if (!FileAccess::file_exists(_path))
+        p_log.error(this, "Resource path '" + _path + "' no longer exists.");
+
+    super::validate_node_during_build(p_log);
 }

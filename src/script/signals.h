@@ -23,7 +23,7 @@
 using namespace godot;
 
 /// Forward declarations
-class OScript;
+class Orchestration;
 
 /// Defines a script signal.
 ///
@@ -33,27 +33,29 @@ class OScript;
 ///
 class OScriptSignal : public Resource
 {
-    friend class OScript;
+    friend class Orchestration;
 
     GDCLASS(OScriptSignal, Resource);
     static void _bind_methods() { }
 
-    MethodInfo _method;           //! The signal definition
-    OScript* _script{ nullptr };  //! Owning script
+    Orchestration* _orchestration{ nullptr };  //! Owning Orchestration
+    MethodInfo _method;                        //! The signal definition
 
 protected:
-
     //~ Begin Wrapped Interface
     void _get_property_list(List<PropertyInfo>* r_list) const;
     bool _get(const StringName& p_name, Variant& r_value);
     bool _set(const StringName& p_name, const Variant& p_value);
     //~ End Wrapped Interface
 
-public:
+    /// Constructor
+    /// Intentionally protected, signals created via an Orchestration
+    OScriptSignal() = default;
 
-    /// Get a reference to the script that owns this signal.
-    /// @return the owning script reference, should always be valid
-    Ref<OScript> get_owning_script() const;
+public:
+    /// Get a reference to the orchestration that owns this signal.
+    /// @return the owning orchestration reference, should always be valid
+    Orchestration* get_orchestration() const;
 
     /// Get the signal name
     /// @return the signal name
@@ -70,36 +72,6 @@ public:
     /// Get the number of function arguments
     /// @return the number of arguments
     size_t get_argument_count() const;
-
-    /// Resizes the argument list to the specified size.
-    ///
-    /// When resizing the argument list so that it grows, new arguments will be added with a
-    /// type of Variant::NIL and a name of "arg#" where the hash is the index in the list of
-    /// arguments. When shrinking the list, arguments at the end of the list are removed.
-    ///
-    /// NOTE: Built-in functions do not allow argument resizing, so this method will return
-    /// false if the method is not user-defined. Additionally, if the new size matches the
-    /// existing size of the argument list, the method also will return false too.
-    ///
-    /// @param p_new_size the new argument list size
-    /// @return true if the argument list was resized, false if it was not.
-    bool resize_argument_list(size_t p_new_size);
-
-    /// Allows changing the argument name based on the supplied argument list index.
-    /// @param p_index the argument list index to change
-    /// @param p_name the new argument name
-    void set_argument_name(size_t p_index, const StringName& p_name);
-
-    /// Allows changing the argument type based on the supplied argument list index.
-    /// @param p_index the argument list index to change
-    /// @param p_type the new argument type
-    void set_argument_type(size_t p_index, Variant::Type p_type);
-
-    /// Helper method to construct a OScriptSignal from a Godot MethodInfo struct.
-    /// @param p_script the script that will own the signal
-    /// @param p_method the method info struct
-    static Ref<OScriptSignal> create(OScript* p_script, const MethodInfo& p_method);
-
 };
 
 #endif  // ORCHESTRATOR_SCRIPT_SIGNALS_H

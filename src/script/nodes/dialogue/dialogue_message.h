@@ -22,10 +22,15 @@
 /// A node that represents a dialogue message that is part of a conversation.
 class OScriptNodeDialogueMessage : public OScriptEditablePinNode
 {
-    ORCHESTRATOR_NODE_CLASS(OScriptNodeDialogueMessage, OScriptEditablePinNode)
+    ORCHESTRATOR_NODE_CLASS(OScriptNodeDialogueMessage, OScriptEditablePinNode);
+    static void _bind_methods() { }
 
 protected:
     int _choices{ 0 };
+
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -34,8 +39,8 @@ public:
     String get_tooltip_text() const override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "dialogue"; }
-    bool validate_node_during_build() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    void validate_node_during_build(BuildLog& p_log) const override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 
     //~ Begin OScriptEditablePinNode Interface

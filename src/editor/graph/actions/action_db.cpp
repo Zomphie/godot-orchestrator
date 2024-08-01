@@ -61,9 +61,9 @@ void OrchestratorGraphActionDB::_generate_filtered_items(const OrchestratorGraph
         {
             if (E->get_handler()->is_filtered(p_filter, E->get_spec()))
                 continue;
-
-            _filtered_items.push_back(E);
         }
+
+        _filtered_items.push_back(E);
     }
 }
 
@@ -72,10 +72,16 @@ void OrchestratorGraphActionDB::clear()
     _object_items.clear();
 }
 
+void OrchestratorGraphActionDB::use_temp(bool p_use_temp)
+{
+    _use_temp = p_use_temp;
+    _object_items["$Temp$"] = { };
+}
+
 void OrchestratorGraphActionDB::load(const OrchestratorGraphActionFilter& p_filter)
 {
     // When base type changes, refresh entire database
-    const StringName base_type = p_filter.context.graph->get_owning_script()->get_base_type();
+    const StringName base_type = p_filter.context.graph->get_orchestration()->get_base_type();
     if (_graph_base_type != base_type)
     {
         clear();
@@ -84,9 +90,9 @@ void OrchestratorGraphActionDB::load(const OrchestratorGraphActionFilter& p_filt
 
     // Calculate the object name to store the items within
     StringName name = "$Default$";
-    if (p_filter.target_object)
+    if (p_filter.has_target_object())
     {
-        name = p_filter.target_object->get_class_static();
+        name = p_filter.get_target_class();
     }
     else if (p_filter.target_classes.size() == 1)
     {
@@ -99,11 +105,8 @@ void OrchestratorGraphActionDB::load(const OrchestratorGraphActionFilter& p_filt
         return;
     }
 
-    if (!p_filter.use_cache)
-    {
-        _object_items["$Temp$"] = { };
+    if (_use_temp)
         name = "$Temp$";
-    }
 
     if (_object_items.is_empty())
         _object_items[name] = { };

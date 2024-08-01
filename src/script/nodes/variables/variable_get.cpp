@@ -16,24 +16,27 @@
 //
 #include "variable_get.h"
 
+#include "common/dictionary_utils.h"
+#include "common/property_utils.h"
+
 class OScriptNodeVariableGetInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeVariableGet);
     StringName _variable_name;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Variant value;
-        if (!_instance->get_variable(_variable_name, value))
+        if (!p_context.get_runtime()->get_variable(_variable_name, value))
         {
-            p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_METHOD, "Variable " + _variable_name + " not found.");
+            p_context.set_error(vformat("Variable '%s' not found.", _variable_name));
             return -1;
         }
 
         if (!p_context.set_output(0, &value))
         {
-            p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_METHOD, "Unable to set output");
+            p_context.set_error("Failed to set variable value on output stack.");
             return -1;
         }
 
@@ -43,12 +46,41 @@ public:
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void OScriptNodeVariableGet::_upgrade(uint32_t p_version, uint32_t p_current_version)
+{
+    if (p_version == 1 and p_current_version >= 2)
+    {
+        // Fixup - makes sure that stored property matches variable, if not reconstructs
+        if (_variable.is_valid())
+        {
+            const Ref<OScriptNodePin> output = find_pin("value", PD_Output);
+            if (output.is_valid() && !PropertyUtils::are_equal(_variable->get_info(), output->get_property_info()))
+                reconstruct_node();
+        }
+    }
+
+    super::_upgrade(p_version, p_current_version);
+}
+
+void OScriptNodeVariableGet::_variable_changed()
+{
+    if (_is_in_editor())
+    {
+        Ref<OScriptNodePin> output = find_pin("value", PD_Output);
+        if (output.is_valid() && output->has_any_connections())
+        {
+            Ref<OScriptNodePin> target = output->get_connections()[0];
+            if (target.is_valid() && !target->can_accept(output))
+                output->unlink_all();
+        }
+    }
+
+    super::_variable_changed();
+}
+
 void OScriptNodeVariableGet::allocate_default_pins()
 {
-    Ref<OScriptNodePin> value = create_pin(PD_Output, "value", _variable->get_variable_type());
-    value->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::NO_CAPITALIZE);
-    value->set_label(_variable_name);
-
+    create_pin(PD_Output, PT_Data, PropertyUtils::as("value", _variable->get_info()))->set_label(_variable_name, false);
     super::allocate_default_pins();
 }
 
@@ -65,11 +97,10 @@ String OScriptNodeVariableGet::get_node_title() const
     return vformat("Get %s", _variable->get_variable_name());
 }
 
-OScriptNodeInstance* OScriptNodeVariableGet::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeVariableGet::instantiate()
 {
     OScriptNodeVariableGetInstance *i = memnew(OScriptNodeVariableGetInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_variable_name = _variable->get_variable_name();
     return i;
 }

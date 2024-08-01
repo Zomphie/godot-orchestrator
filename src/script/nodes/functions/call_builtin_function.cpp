@@ -17,41 +17,40 @@
 #include "call_builtin_function.h"
 
 #include "common/dictionary_utils.h"
+#include "common/method_utils.h"
+#include "common/version.h"
 
 OScriptNodeCallBuiltinFunction::OScriptNodeCallBuiltinFunction()
 {
     _flags = ScriptNodeFlags::CATALOGABLE;
+    _function_flags = FunctionFlags::FF_PURE;
 }
 
 bool OScriptNodeCallBuiltinFunction::_has_execution_pins(const MethodInfo& p_method) const
 {
-    return !_has_return_value(p_method);
-}
-
-bool OScriptNodeCallBuiltinFunction::_has_return_value(const MethodInfo& p_method) const
-{
-    return p_method.return_val.type != Variant::NIL || (p_method.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT);
-}
-
-void OScriptNodeCallBuiltinFunction::post_initialize()
-{
-    _reference.name = _reference.method.name;
-    _reference.return_type = _reference.method.return_val.type;
-
-    super::post_initialize();
+    return !MethodUtils::has_return_value(p_method);
 }
 
 String OScriptNodeCallBuiltinFunction::get_tooltip_text() const
 {
     if (!_reference.method.name.is_empty())
         return vformat("Calls the built-in Godot function '%s'", _reference.method.name);
-    else
-        return "Calls the specified built-in Godot function";
+
+    return "Calls the specified built-in Godot function";
 }
 
 String OScriptNodeCallBuiltinFunction::get_node_title() const
 {
-    return vformat("Call %s (%s)", _reference.method.name, _reference.method.name.capitalize());
+    return vformat("%s", _reference.method.name.capitalize());
+}
+
+String OScriptNodeCallBuiltinFunction::get_help_topic() const
+{
+    #if GODOT_VERSION >= 0x040300
+    return vformat("class_method:@GlobalScope:%s", _reference.method.name);
+    #else
+    return super::get_help_topic();
+    #endif
 }
 
 void OScriptNodeCallBuiltinFunction::initialize(const OScriptNodeInitContext& p_context)
@@ -63,10 +62,7 @@ void OScriptNodeCallBuiltinFunction::initialize(const OScriptNodeInitContext& p_
 
     const MethodInfo mi = DictionaryUtils::to_method(data);
     _reference.method = mi;
-    _reference.name = _reference.method.name;
-    _reference.return_type = _reference.method.return_val.type;
 
-    _function_flags = FunctionFlags::FF_PURE;
     _set_function_flags(_reference.method);
 
     super::initialize(p_context);

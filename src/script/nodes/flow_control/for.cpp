@@ -16,7 +16,9 @@
 //
 #include "for.h"
 
+#include "common/callable_lambda.h"
 #include "common/dictionary_utils.h"
+#include "common/property_utils.h"
 
 class OScriptNodeForLoopInstance : public OScriptNodeInstance
 {
@@ -25,12 +27,12 @@ class OScriptNodeForLoopInstance : public OScriptNodeInstance
 public:
     int get_working_memory_size() const override { return 1; }
 
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         // Break triggers node input port 1, check if that caused the step
         // If so we're done and we should exit.
         if (p_context.get_current_node_port() == 1)
-            return 1;
+            return 2;
 
         if (p_context.get_step_mode() == STEP_MODE_BEGIN)
             p_context.set_working_memory(0, p_context.get_input(0));
@@ -99,6 +101,28 @@ bool OScriptNodeForLoop::_set(const StringName& p_name, const Variant& p_value)
 
 void OScriptNodeForLoop::post_initialize()
 {
+    // Fixes issue where a break pin exists but the break status was not persisted
+    if (!_with_break && find_pin("break", PD_Output).is_valid())
+        _with_break = true;
+
+    // Automatically adjusts old nodes to having the new aborted node layout
+    if (_with_break && !find_pin("aborted", PD_Output).is_valid())
+    {
+        reconstruct_node();
+
+        // This needs to be delayed until the end of frame due to pin index caching
+        callable_mp_lambda(this, [&,this]() {
+            const Ref<OScriptNodePin> aborted = find_pin("aborted", PD_Output);
+            const Ref<OScriptNodePin> completed = find_pin("completed", PD_Output);
+            if (aborted.is_valid() && completed.is_valid())
+            {
+                const Vector<Ref<OScriptNodePin>> targets = completed->get_connections();
+                if (!targets.is_empty())
+                    aborted->link(targets[0]);
+            }
+        }).call_deferred();
+    }
+
     super::post_initialize();
 }
 
@@ -119,16 +143,19 @@ void OScriptNodeForLoop::reallocate_pins_during_reconstruction(const Vector<Ref<
 
 void OScriptNodeForLoop::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Input, "first_index", Variant::INT, _start_index)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "last_index", Variant::INT, _end_index)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("first_index", Variant::INT), _start_index);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("last_index", Variant::INT), _end_index);
 
     if (_with_break)
-        create_pin(PD_Input, "break")->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::SHOW_LABEL);
+        create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("break"))->show_label();
 
-    create_pin(PD_Output, "loop_body")->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
-    create_pin(PD_Output, "index", Variant::INT)->set_flags(OScriptNodePin::Flags::DATA | OScriptNodePin::Flags::SHOW_LABEL);
-    create_pin(PD_Output, "completed")->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::SHOW_LABEL);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("loop_body"))->show_label();
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("index", Variant::INT))->show_label();
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("completed"))->show_label();
+
+    if (_with_break)
+        create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("aborted"))->show_label();
 
     super::allocate_default_pins();
 }
@@ -163,11 +190,10 @@ void OScriptNodeForLoop::get_actions(List<Ref<OScriptAction>>& p_action_list)
     super::get_actions(p_action_list);
 }
 
-OScriptNodeInstance* OScriptNodeForLoop::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeForLoop::instantiate()
 {
     OScriptNodeForLoopInstance* i = memnew(OScriptNodeForLoopInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 

@@ -16,14 +16,18 @@
 //
 #include "graph_node_pin.h"
 
+#include "common/callable_lambda.h"
+#include "common/property_utils.h"
 #include "common/scene_utils.h"
+#include "common/settings.h"
+#include "common/string_utils.h"
 #include "common/variant_utils.h"
 #include "graph_edit.h"
 #include "graph_node.h"
-#include "plugin/settings.h"
-#include "script/nodes/editable_pin_node.h"
 #include "script/nodes/data/coercion_node.h"
 #include "script/nodes/data/dictionary.h"
+#include "script/nodes/editable_pin_node.h"
+#include "script/nodes/functions/call_function.h"
 #include "script/nodes/variables/variable_get.h"
 #include "script/nodes/variables/variable_set.h"
 
@@ -52,16 +56,31 @@ String OrchestratorGraphNodePin::_get_color_name() const
     return vformat("ui/connection_colors/%s", type_name);
 }
 
+void OrchestratorGraphNodePin::_update_label()
+{
+    if (_label)
+    {
+        if (_pin->is_label_visible())
+        {
+            String text = StringUtils::default_if_empty(_pin->get_label(), _pin->get_pin_name());
+            if (_pin->use_pretty_labels())
+                text = text.capitalize();
+
+            _label->set_text(text);
+            _label->set_custom_minimum_size(Vector2());
+        }
+        else
+        {
+            _label->set_text("");
+            _label->set_custom_minimum_size(Vector2(10, 0));
+        }
+    }
+}
+
 void OrchestratorGraphNodePin::_notification(int p_what)
 {
     if (p_what == NOTIFICATION_READY)
-    {
         _create_widgets();
-
-        _context_menu = memnew(PopupMenu);
-        _context_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNodePin::_on_context_menu_selection));
-        add_child(_context_menu);
-    }
 }
 
 void OrchestratorGraphNodePin::_gui_input(const Ref<InputEvent>& p_event)
@@ -154,7 +173,7 @@ bool OrchestratorGraphNodePin::is_output() const
 
 bool OrchestratorGraphNodePin::is_connectable() const
 {
-    return !_pin->get_flags().has_flag(OScriptNodePin::NO_CONNECTION);
+    return _pin->is_connectable();
 }
 
 bool OrchestratorGraphNodePin::is_connected() const
@@ -164,7 +183,7 @@ bool OrchestratorGraphNodePin::is_connected() const
 
 bool OrchestratorGraphNodePin::is_hidden() const
 {
-    return _pin->get_flags().has_flag(OScriptNodePin::Flags::HIDDEN);
+    return _pin->is_hidden();
 }
 
 bool is_numeric(Variant::Type p_type)
@@ -219,14 +238,33 @@ void OrchestratorGraphNodePin::set_default_value_control_visibility(bool p_visib
 {
     if (_default_value)
         _default_value->set_visible(p_visible);
+
+    if (_label && _is_label_updated_on_default_value_visibility_change())
+        _update_label();
+}
+
+void OrchestratorGraphNodePin::show_icon(bool p_visible)
+{
+    if (_icon)
+        _icon->set_visible(p_visible);
+}
+
+void OrchestratorGraphNodePin::_remove_editable_pin()
+{
+    Ref<OScriptEditablePinNode> editable = _node->get_script_node();
+    if (editable.is_valid())
+        editable->remove_dynamic_pin(_pin);
+
+    Ref<OScriptNodeCallFunction> function_call = _node->get_script_node();
+    if (function_call.is_valid() && function_call->is_vararg())
+        function_call->remove_dynamic_pin(_pin);
 }
 
 void OrchestratorGraphNodePin::_promote_as_variable()
 {
-    OScriptLanguage* language = OScriptLanguage::get_singleton();
-    OScript* script = _node->get_script_node()->get_owning_script();
+    Orchestration* orchestation = _node->get_script_node()->get_orchestration();
 
-    Ref<OScriptVariable> variable = script->create_variable(_create_promoted_variable_name(), _pin->get_type());
+    Ref<OScriptVariable> variable = orchestation->create_variable(_create_promoted_variable_name(), _pin->get_type());
     if (!variable.is_valid())
         return;
 
@@ -241,34 +279,28 @@ void OrchestratorGraphNodePin::_promote_as_variable()
     if (is_input())
     {
         position -= offset;
-        Ref<OScriptNodeVariableGet> var_node = language->create_node_from_type<OScriptNodeVariableGet>(script);
-        if (var_node.is_valid())
-        {
-            var_node->initialize(context);
-            get_graph()->spawn_node(var_node, position);
-            var_node->find_pin(0, PD_Output)->link(_pin);
-        }
+        get_graph()->spawn_node<OScriptNodeVariableGet>(context, position,
+            callable_mp_lambda(this, [&, this](const Ref<OScriptNodeVariableGet>& p_node) {
+                p_node->find_pin(0, PD_Output)->link(_pin);
+            }));
     }
     else
     {
         position += offset + Vector2(25, 0);
-        Ref<OScriptNodeVariableSet> var_node = language->create_node_from_type<OScriptNodeVariableSet>(script);
-        if (var_node.is_valid())
-        {
-            var_node->initialize(context);
-            get_graph()->spawn_node(var_node, position);
-            _pin->link(var_node->find_pin(1, PD_Input));
-        }
+        get_graph()->spawn_node<OScriptNodeVariableSet>(context, position,
+            callable_mp_lambda(this, [&, this](const Ref<OScriptNodeVariableSet>& p_node) {
+                _pin->link(p_node->find_pin(1, PD_Input));
+            }));
     }
 }
 
 String OrchestratorGraphNodePin::_create_promoted_variable_name()
 {
-    OScript* script = _node->get_script_node()->get_owning_script();
+    Orchestration* orchestration = _node->get_script_node()->get_orchestration();
 
     int index = 0;
     String name = _pin->get_pin_name() + itos(index++);
-    while (script->has_variable(name))
+    while (orchestration->has_variable(name))
         name = _pin->get_pin_name() + itos(index++);
 
     return name;
@@ -295,16 +327,17 @@ void OrchestratorGraphNodePin::_create_widgets()
             HBoxContainer* row0 = memnew(HBoxContainer);
             vbox->add_child(row0);
 
-            if (!is_execution() && show_icons)
-                row0->add_child(_create_type_icon());
+            if (!is_execution())
+                row0->add_child(_create_type_icon(true));
 
-            Label* label = _create_label();
-            label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-            label->set_h_size_flags(SIZE_FILL);
-            label->set_v_size_flags(SIZE_SHRINK_CENTER);
-            row0->add_child(label);
+            _label = memnew(Label);
+            _label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+            _label->set_h_size_flags(SIZE_FILL);
+            _label->set_v_size_flags(SIZE_SHRINK_CENTER);
+            _update_label();
+            row0->add_child(_label);
 
-            if (!is_execution() && !_pin->get_flags().has_flag(OScriptNodePin::Flags::IGNORE_DEFAULT))
+            if (!is_execution() && !_pin->is_default_ignored())
             {
                 _default_value = _get_default_value_widget();
                 if (_default_value)
@@ -316,16 +349,17 @@ void OrchestratorGraphNodePin::_create_widgets()
         }
         else
         {
-            if (!is_execution() && show_icons)
-                add_child(_create_type_icon());
+            if (!is_execution())
+                add_child(_create_type_icon(show_icons));
 
-            Label* label = _create_label();
-            label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-            label->set_h_size_flags(SIZE_FILL);
-            label->set_v_size_flags(SIZE_SHRINK_CENTER);
-            add_child(label);
+            _label = memnew(Label);
+            _label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+            _label->set_h_size_flags(SIZE_FILL);
+            _label->set_v_size_flags(SIZE_SHRINK_CENTER);
+            _update_label();
+            add_child(_label);
 
-            if (!is_execution() && !_pin->get_flags().has_flag(OScriptNodePin::Flags::IGNORE_DEFAULT))
+            if (!is_execution() && !_pin->is_default_ignored())
             {
                 _default_value = _get_default_value_widget();
                 if (_default_value)
@@ -338,57 +372,29 @@ void OrchestratorGraphNodePin::_create_widgets()
     }
     else
     {
-        Label* label = _create_label();
-        label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
-        label->set_h_size_flags(SIZE_FILL);
-        label->set_v_size_flags(SIZE_SHRINK_CENTER);
-        add_child(label);
+        _label = memnew(Label);
+        _label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
+        _label->set_h_size_flags(SIZE_FILL);
+        _label->set_v_size_flags(SIZE_SHRINK_CENTER);
+        _update_label();
+        add_child(_label);
 
-        if (!is_execution() && show_icons)
-            add_child(_create_type_icon());
+        if (!is_execution())
+            add_child(_create_type_icon(show_icons));
     }
 }
 
-TextureRect* OrchestratorGraphNodePin::_create_type_icon()
+TextureRect* OrchestratorGraphNodePin::_create_type_icon(bool p_visible)
 {
-    TextureRect* rect = memnew(TextureRect);
+    _icon = memnew(TextureRect);
     String value_type_name = _pin->get_pin_type_name();
-    rect->set_texture(SceneUtils::get_icon(this, value_type_name));
-    rect->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+    _icon->set_texture(SceneUtils::get_class_icon(value_type_name));
+    _icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
 
-    if (_pin->get_flags().has_flag(OScriptNodePin::Flags::HIDDEN))
-        rect->set_visible(false);
+    if (_pin->is_hidden() || !p_visible)
+        _icon->set_visible(false);
 
-    return rect;
-}
-
-Label* OrchestratorGraphNodePin::_create_label()
-{
-    bool ignore_label = _pin->get_flags().has_flag(OScriptNodePin::Flags::HIDE_LABEL);
-    bool force_label = _pin->get_flags().has_flag(OScriptNodePin::Flags::SHOW_LABEL);
-
-    String text = _pin->get_label();
-    if (text.is_empty())
-        text = _pin->get_pin_name();
-
-    if (!_pin->get_flags().has_flag(OScriptNodePin::Flags::NO_CAPITALIZE))
-        text = text.capitalize();
-
-    Label* label = memnew(Label);
-    if (!ignore_label)
-    {
-        if (!is_execution() || force_label)
-            label->set_text(text);
-        else
-            label->set_custom_minimum_size(Vector2(50, 0));
-    }
-    else
-        label->set_custom_minimum_size(Vector2(50, 0));
-
-    if (_pin->get_flags().has_flag(OScriptNodePin::Flags::HIDDEN))
-        label->set_visible(false);
-
-    return label;
+    return _icon;
 }
 
 void OrchestratorGraphNodePin::_update_tooltip()
@@ -398,11 +404,26 @@ void OrchestratorGraphNodePin::_update_tooltip()
     Variant::Type pin_type = _pin->get_type();
     if (!is_execution())
     {
-        String tooltip_text = label.capitalize();
+        String tooltip_text = StringUtils::default_if_empty(label, _pin->get_pin_name()).capitalize();
         tooltip_text += "\n" + VariantUtils::get_friendly_type_name(pin_type, true).capitalize();
+
+        if (!_pin->get_property_info().class_name.is_empty())
+            tooltip_text += "\nClass: " + _pin->get_property_info().class_name;
 
         if (!tooltip.is_empty())
             tooltip_text += "\n\n" + tooltip.capitalize();
+
+        #if DEBUG_ENABLED
+        tooltip_text += "\n\nProperty Name: " + _pin->get_property_info().name + "\n";
+        tooltip_text += "Property Type: " + itos(_pin->get_property_info().type) + " - " + _pin->get_pin_type_name() + "\n";
+        tooltip_text += "Property Class: " + _pin->get_property_info().class_name + "\n";
+        tooltip_text += "Property Hint: " + _pin->get_property_info().hint_string + "\n";
+        tooltip_text += "Property Hint Flags: " + itos(_pin->get_property_info().hint) + "\n";
+        tooltip_text += "Property Usage: " + PropertyUtils::usage_to_string(_pin->get_property_info().usage) + "\n\n";
+        tooltip_text += "Default Value: " + String(_pin->get_default_value()) + "\n";
+        tooltip_text += "Generated Default Value: " + String(_pin->get_generated_default_value()) + "\n";
+        tooltip_text += "Effective Default Value: " + String(_pin->get_effective_default_value());
+        #endif
 
         set_tooltip_text(tooltip_text);
     }
@@ -433,6 +454,11 @@ void OrchestratorGraphNodePin::_populate_graph_node_in_sub_menu(int p_id, const 
 
 void OrchestratorGraphNodePin::_show_context_menu(const Vector2& p_position)
 {
+    _context_menu = memnew(PopupMenu);
+    _context_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNodePin::_handle_context_menu));
+    _context_menu->connect("close_requested", callable_mp(this, &OrchestratorGraphNodePin::_cleanup_context_menu));
+    add_child(_context_menu);
+
     // When showing the context-menu, if the current node is not selected, we should clear the
     // selection and the operation will only be applicable for this node and its pin.
     if (!_node->is_selected())
@@ -464,7 +490,12 @@ void OrchestratorGraphNodePin::_show_context_menu(const Vector2& p_position)
     }
 
     Ref<OScriptEditablePinNode> editable = owner_node;
-    if (editable.is_valid() && editable->can_remove_dynamic_pin(_pin))
+    bool editable_pin_removable = editable.is_valid() && editable->can_remove_dynamic_pin(_pin);
+
+    Ref<OScriptNodeCallFunction> function_call = owner_node;
+    bool function_call_pin_removable = function_call.is_valid() && function_call->can_remove_dynamic_pin(_pin);
+
+    if (editable_pin_removable || function_call_pin_removable)
     {
         String text = "Remove pin";
 
@@ -482,11 +513,11 @@ void OrchestratorGraphNodePin::_show_context_menu(const Vector2& p_position)
         {
             PopupMenu* sub_menu = memnew(PopupMenu);
             sub_menu->set_name("change_pin_type_options");
-            sub_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNodePin::_on_context_menu_change_pin_type));
+            sub_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNodePin::_change_pin_type));
 
             for (int i = 0; i < options.size(); i++)
             {
-                const String type = VariantUtils::get_friendly_type_name(options[i]).capitalize();
+                const String type = VariantUtils::get_friendly_type_name(options[i], true).capitalize();
                 sub_menu->add_item(type, CM_CHANGE_PIN_TYPE + i);
                 sub_menu->set_item_metadata(sub_menu->get_item_index(CM_CHANGE_PIN_TYPE + i), options[i]);
             }
@@ -499,16 +530,16 @@ void OrchestratorGraphNodePin::_show_context_menu(const Vector2& p_position)
     Vector<Ref<OScriptNodePin>> connections = _pin->get_connections();
     if (connections.size() <= 1)
     {
-        _context_menu->add_icon_item(SceneUtils::get_icon(this, "Unlinked"), "Break This Link", CM_BREAK_LINKS);
+        _context_menu->add_icon_item(SceneUtils::get_editor_icon("Unlinked"), "Break This Link", CM_BREAK_LINKS);
         _context_menu->set_item_disabled(_context_menu->get_item_index(CM_BREAK_LINKS), !has_connections);
     }
     else
     {
-        _context_menu->add_icon_item(SceneUtils::get_icon(this, "Unlinked"), "Break All Pin Links", CM_BREAK_LINKS);
+        _context_menu->add_icon_item(SceneUtils::get_editor_icon("Unlinked"), "Break All Pin Links", CM_BREAK_LINKS);
 
         PopupMenu* sub_menu = memnew(PopupMenu);
         sub_menu->set_name("break_pin");
-        sub_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNodePin::_on_context_menu_break_pin));
+        sub_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNodePin::_link_pin));
         _populate_graph_node_in_sub_menu(CM_BREAK_LINK, "Break Pin Link to", sub_menu, connections);
         _context_menu->add_child(sub_menu);
         _context_menu->add_submenu_item("Break Link to...", sub_menu->get_name(), CM_BREAK_LINK);
@@ -518,7 +549,7 @@ void OrchestratorGraphNodePin::_show_context_menu(const Vector2& p_position)
     {
         PopupMenu* sub_menu = memnew(PopupMenu);
         sub_menu->set_name("node_jump");
-        sub_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNodePin::_on_context_menu_jump_node));
+        sub_menu->connect("id_pressed", callable_mp(this, &OrchestratorGraphNodePin::_jump_to_adjacent_node));
         _populate_graph_node_in_sub_menu(CM_JUMP_NODE, "Jump to", sub_menu, connections);
         _context_menu->add_child(sub_menu);
         _context_menu->add_submenu_item("Jump to connected node...", sub_menu->get_name(), CM_JUMP_NODE);
@@ -534,7 +565,7 @@ void OrchestratorGraphNodePin::_show_context_menu(const Vector2& p_position)
 
     // Documentation
     _context_menu->add_separator("Documentation");
-    _context_menu->add_icon_item(SceneUtils::get_icon(this, "Help"), "View Documentation", CM_VIEW_DOCUMENTATION);
+    _context_menu->add_icon_item(SceneUtils::get_editor_icon("Help"), "View Documentation", CM_VIEW_DOCUMENTATION);
 
     _context_menu->set_position(get_screen_position() + (p_position * (real_t) get_graph()->get_zoom()));
     _context_menu->reset_size();
@@ -543,7 +574,7 @@ void OrchestratorGraphNodePin::_show_context_menu(const Vector2& p_position)
 
 void OrchestratorGraphNodePin::_select_nodes_for_pin(const Ref<OScriptNodePin>& p_pin)
 {
-    Vector<Ref<OScriptNodePin>> connections = get_graph()->get_owning_script()->get_connections(p_pin.ptr());
+    Vector<Ref<OScriptNodePin>> connections = get_graph()->get_orchestration()->get_connections(p_pin.ptr());
     for (const Ref<OScriptNodePin>& connection : connections)
     {
         Ref<OScriptNode> node = connection->get_owning_node();
@@ -586,7 +617,7 @@ Ref<OScriptNodePin> OrchestratorGraphNodePin::_get_connected_pin_by_sub_menu_met
     return {};
 }
 
-void OrchestratorGraphNodePin::_on_context_menu_selection(int p_id)
+void OrchestratorGraphNodePin::_handle_context_menu(int p_id)
 {
     // Handle others
     switch (p_id)
@@ -610,14 +641,12 @@ void OrchestratorGraphNodePin::_on_context_menu_selection(int p_id)
         }
         case CM_VIEW_DOCUMENTATION:
         {
-            get_graph()->goto_class_help(get_graph_node()->get_script_node()->get_class());
+            get_graph()->goto_class_help(get_graph_node()->get_script_node()->get_help_topic());
             break;
         }
         case CM_REMOVE:
         {
-            Ref<OScriptEditablePinNode> editable = _node->get_script_node();
-            if (editable.is_valid())
-                editable->remove_dynamic_pin(_pin);
+            _remove_editable_pin();
             break;
         }
         case CM_PROMOTE_TO_VARIABLE:
@@ -630,9 +659,20 @@ void OrchestratorGraphNodePin::_on_context_menu_selection(int p_id)
             // no-op
             break;
     }
+
+    _cleanup_context_menu();
 }
 
-void OrchestratorGraphNodePin::_on_context_menu_change_pin_type(int p_id)
+void OrchestratorGraphNodePin::_cleanup_context_menu()
+{
+    if (_context_menu)
+    {
+        _context_menu->queue_free();
+        _context_menu = nullptr;
+    }
+}
+
+void OrchestratorGraphNodePin::_change_pin_type(int p_id)
 {
     Variant metadata = _get_context_sub_menu_item_metadata(CM_CHANGE_PIN_TYPE, p_id);
     if (metadata.get_type() == Variant::INT)
@@ -640,16 +680,20 @@ void OrchestratorGraphNodePin::_on_context_menu_change_pin_type(int p_id)
         const int type = metadata;
         get_graph_node()->get_script_node()->change_pin_types(VariantUtils::to_type(type));
     }
+
+    _cleanup_context_menu();
 }
 
-void OrchestratorGraphNodePin::_on_context_menu_break_pin(int p_id)
+void OrchestratorGraphNodePin::_link_pin(int p_id)
 {
     const Ref<OScriptNodePin> connection = _get_connected_pin_by_sub_menu_metadata(CM_BREAK_LINK, p_id);
     if (connection.is_valid())
         _pin->unlink(connection);
+
+    _cleanup_context_menu();
 }
 
-void OrchestratorGraphNodePin::_on_context_menu_jump_node(int p_id)
+void OrchestratorGraphNodePin::_jump_to_adjacent_node(int p_id)
 {
     const Ref<OScriptNodePin> connection = _get_connected_pin_by_sub_menu_metadata(CM_JUMP_NODE, p_id);
     if (connection.is_valid())
@@ -657,4 +701,6 @@ void OrchestratorGraphNodePin::_on_context_menu_jump_node(int p_id)
         const int node_id = connection->get_owning_node()->get_id();
         get_graph()->focus_node(node_id);
     }
+
+    _cleanup_context_menu();
 }

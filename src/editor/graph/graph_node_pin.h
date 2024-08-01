@@ -37,10 +37,12 @@ struct ResolvedType
 {
     Variant::Type type{ Variant::NIL };
     StringName class_name;
-    Object* object{ nullptr };
+    Ref<OScriptTargetObject> object;
 
     _FORCE_INLINE_ bool is_non_object_type() const { return type != Variant::NIL && type != Variant::OBJECT; }
     _FORCE_INLINE_ bool is_class_type() const { return !class_name.is_empty(); }
+    _FORCE_INLINE_ bool has_target_object() const { return !object.is_null() && object->has_target(); }
+    _FORCE_INLINE_ StringName get_target_class() const { return object->get_target_class(); }
 };
 
 /// The base implementation of the OrchestratorGraphNode's pins.
@@ -70,15 +72,28 @@ protected:
     };
 
     OrchestratorGraphNode* _node{ nullptr };    //! The owning node
+    TextureRect* _icon{ nullptr };              //! The pin's icon
+    Label* _label{ nullptr };                   //! The pin's label
     Control* _default_value{ nullptr };         //! The default value control
     PopupMenu* _context_menu{ nullptr };        //! The context menu
     Ref<OScriptNodePin> _pin;                   //! The script pin reference
+
+    //~ Begin Wrapped Interface
+    void _notification(int p_what);
+    //~ End Wrapped Interface
 
     OrchestratorGraphNodePin() = default;
 
     /// Get the connection color name to be used for this pin.
     /// @return the connection color name.
     virtual String _get_color_name() const;
+
+    /// Updates the pin's label
+    virtual void _update_label();
+
+    /// Return whether to update the label on default value visibility change
+    /// @return true if label is updated when default value widget visibility is toggled
+    virtual bool _is_label_updated_on_default_value_visibility_change() { return false; }
 
     /// Creates the UI widgets for this specific pin.
     virtual void _create_widgets();
@@ -100,10 +115,6 @@ public:
     /// @param p_node the owning node, should not be null
     /// @param p_pin the pin reference, should be valid
     OrchestratorGraphNodePin(OrchestratorGraphNode* p_node, const Ref<OScriptNodePin>& p_pin);
-
-    /// Godot callback that handles notifications
-    /// @param p_what the notification to be handled
-    void _notification(int p_what);
 
     /// Handle GUI input events for the pin.
     /// @param p_event the input event
@@ -195,10 +206,17 @@ public:
     /// @param p_visible whether the control is visible
     void set_default_value_control_visibility(bool p_visible);
 
+    /// Whether the icons are shown
+    /// @param p_visible whether to show the icon
+    void show_icon(bool p_visible);
+
 private:
 
     void _select_nodes_for_pin(const Ref<OScriptNodePin>& p_pin);
     void _select_nodes_for_pin(const Ref<OScriptNodePin>& p_pin, OrchestratorGraphNode* p_node);
+
+    /// Removes the editable pin
+    void _remove_editable_pin();
 
     /// Promote this pin to a variable
     void _promote_as_variable();
@@ -208,12 +226,9 @@ private:
     String _create_promoted_variable_name();
 
     /// Creates the pin's rendered icon
+    /// @param p_visible whether the icon is visible
     /// @return the icon texture rect
-    TextureRect* _create_type_icon();
-
-    /// Creates the pin's label
-    /// @return the label
-    Label* _create_label();
+    TextureRect* _create_type_icon(bool p_visible);
 
     /// Updates the pin's tooltip text
     void _update_tooltip();
@@ -242,21 +257,24 @@ private:
     /// @return the connection pin, could be invalid if the connection lookup fails
     Ref<OScriptNodePin> _get_connected_pin_by_sub_menu_metadata(int p_menu_id, int p_id);
 
-    /// Observes when a context menu item is selected
+    /// Handles the selection of a context menu item
     /// @param p_id the selected item id
-    void _on_context_menu_selection(int p_id);
+    void _handle_context_menu(int p_id);
 
-    /// Dispatched when requesting the pin's type to be changed
+    /// Cleans up the context menu after it has closed
+    void _cleanup_context_menu();
+
+    /// Changes the pin's type to the selected type
     /// @param p_id the menu id of the new pin type
-    void _on_context_menu_change_pin_type(int p_id);
+    void _change_pin_type(int p_id);
 
-    /// Dispatched when requesting to break a specific pin
+    /// Breaks or unlinks a pin's connection
     /// @param p_id the menu id of the pin to break
-    void _on_context_menu_break_pin(int p_id);
+    void _link_pin(int p_id);
 
-    /// Dispatched when requesting to jump to an adjacent node
+    /// Jumps to an adjacent node
     /// @param p_id the menu id of the node to jump to
-    void _on_context_menu_jump_node(int p_id);
+    void _jump_to_adjacent_node(int p_id);
 };
 
 #endif  // ORCHESTRATOR_GRAPH_NODE_PIN_H

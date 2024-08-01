@@ -16,6 +16,7 @@
 //
 #include "property_get.h"
 
+#include "common/property_utils.h"
 #include "script/script.h"
 
 #include <godot_cpp/classes/node.hpp>
@@ -27,24 +28,24 @@ class OScriptNodePropertyGetInstance : public OScriptNodeInstance
 
     OScriptNodeProperty::CallMode _call_mode{ OScriptNodeProperty::CallMode::CALL_SELF };
     String _target_class;
-    String _property_name;
+    PropertyInfo _property;
     NodePath _node_path;
 
-    Node* _get_node_path_target()
+    Node* _get_node_path_target(OScriptExecutionContext& p_context)
     {
-        if (Node* owner = Object::cast_to<Node>(_instance->get_owner()))
+        if (Node* owner = Object::cast_to<Node>(p_context.get_owner()))
             return owner->get_tree()->get_current_scene()->get_node_or_null(_node_path);
         return nullptr;
     }
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         switch (_call_mode)
         {
             case OScriptNodeProperty::CALL_SELF:
             {
-                Variant value = _instance->get_owner()->get(_property_name);
+                Variant value = p_context.get_owner()->get(_property.name);
                 p_context.set_output(0, &value);
                 break;
             }
@@ -55,7 +56,7 @@ public:
                 if (instance.get_type() == Variant::OBJECT)
                 {
                     Object* obj = Object::cast_to<Object>(instance);
-                    Variant value = obj->get(_property_name);
+                    Variant value = obj->get(_property.name);
                     p_context.set_output(0, &value);
                 }
                 break;
@@ -63,9 +64,9 @@ public:
 
             case OScriptNodeProperty::CALL_NODE_PATH:
             {
-                if (Node* target = _get_node_path_target())
+                if (Node* target = _get_node_path_target(p_context))
                 {
-                    Variant value = target->get(_property_name);
+                    Variant value = target->get(_property.name);
                     p_context.set_output(0, &value);
                 }
                 break;
@@ -80,32 +81,53 @@ public:
 void OScriptNodePropertyGet::allocate_default_pins()
 {
     if (_call_mode == CALL_INSTANCE)
-        create_pin(PD_Input, "target", Variant::OBJECT)->set_flags(OScriptNodePin::Flags::DATA);
+    {
+        Ref<OScriptNodePin> target = create_pin(PD_Input, PT_Data, PropertyUtils::make_object("target", _base_type));
+        target->set_label(_base_type);
+        target->no_pretty_format();
+    }
 
-    create_pin(PD_Output, _property_name, _property_type)->set_flags(OScriptNodePin::Flags::DATA);
+    create_pin(PD_Output, PT_Data, _property);
 }
 
 String OScriptNodePropertyGet::get_tooltip_text() const
 {
-    if (!_property_name.is_empty())
-        return vformat("Returns the value the property '%s'", _property_name);
-    else
-        return "Returns the value of a given property";
+    if (!_property.name.is_empty())
+    {
+        String tooltip = vformat("Returns the value of the property '%s'.", _property.name);
+        if (!_node_path.is_empty())
+            tooltip += "\nNode Path: " + _node_path;
+
+        return tooltip;
+    }
+
+    return "Returns the value of a given property";
 }
 
 String OScriptNodePropertyGet::get_node_title() const
 {
-    return vformat("Get %s%s", _property_name.capitalize(), _call_mode == CALL_SELF ? " (Self)" : "");
+    return vformat("Get %s%s", _property.name.capitalize(), _call_mode == CALL_SELF ? " (Self)" : "");
 }
 
-OScriptNodeInstance* OScriptNodePropertyGet::instantiate(OScriptInstance* p_instance)
+StringName OScriptNodePropertyGet::resolve_type_class(const Ref<OScriptNodePin>& p_pin) const
+{
+    if (p_pin.is_valid() && p_pin->is_output())
+    {
+        if (!_property.hint_string.is_empty())
+            return _property.hint_string;
+        if (!_base_type.is_empty())
+            return _base_type;
+    }
+    return super::resolve_type_class(p_pin);
+}
+
+OScriptNodeInstance* OScriptNodePropertyGet::instantiate()
 {
     OScriptNodePropertyGetInstance* i = memnew(OScriptNodePropertyGetInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_call_mode = _call_mode;
     i->_target_class = _base_type;
-    i->_property_name = _property_name;
+    i->_property = _property;
     i->_node_path = _node_path;
     return i;
 }

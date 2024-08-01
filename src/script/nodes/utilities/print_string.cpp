@@ -16,7 +16,9 @@
 //
 #include "print_string.h"
 
+#include "common/property_utils.h"
 #include "script/script.h"
+#include "script/vm/script_state.h"
 
 #include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/editor_plugin.hpp>
@@ -40,11 +42,12 @@ private:
     static HashMap<String, Node*> _scene_containers;
 
 public:
-    int step(OScriptNodeExecutionContext& p_context);
+    int get_working_memory_size() const override { return 1; }
+    int step(OScriptExecutionContext& p_context) override;
 
 private:
     Node* _get_or_create_ui_container(Node* p_root_node);
-    SceneTree* _get_tree();
+    SceneTree* _get_tree(OScriptExecutionContext& p_context);
 
     void _ui_container_node_added(Node* p_node);
     void _ui_container_node_removed(Node* p_node);
@@ -52,11 +55,26 @@ private:
 
 HashMap<String, Node*> OScriptNodePrintStringInstance::_scene_containers;
 
-int OScriptNodePrintStringInstance::step(OScriptNodeExecutionContext& p_context)
+int OScriptNodePrintStringInstance::step(OScriptExecutionContext& p_context)
 {
     // When this node is executed in export builds, it does nothing.
     if (!OS::get_singleton()->has_feature("editor"))
         return 0;
+
+    if (p_context.get_step_mode() != STEP_MODE_RESUME)
+    {
+        if (Node* owner = Object::cast_to<Node>(p_context.get_owner()))
+        {
+            if (!owner->is_inside_tree())
+            {
+                Ref<OScriptState> state;
+                state.instantiate();
+                state->connect_to_signal(owner, "tree_entered", Array());
+                p_context.set_working_memory(0, state);
+                return STEP_FLAG_YIELD;
+            }
+        }
+    }
 
     // When this node is called from within a "_ready" function, it is unable to add the UI bits
     // to the scene at the scene root because the scene's root is not yet marked ready. This UI
@@ -72,7 +90,7 @@ int OScriptNodePrintStringInstance::step(OScriptNodeExecutionContext& p_context)
     // current scene, but rather that it will exist at some point in the future.
     if (p_context.get_input(1))
     {
-        SceneTree* tree = _get_tree();
+        SceneTree* tree = _get_tree(p_context);
 
         Node* container = _get_or_create_ui_container(tree->get_current_scene());
         if (container)
@@ -82,6 +100,7 @@ int OScriptNodePrintStringInstance::step(OScriptNodeExecutionContext& p_context)
             RichTextLabel* label = memnew(RichTextLabel);
             label->set_fit_content(true);
             label->set_use_bbcode(true);
+            label->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
             container->add_child(label);
 
             label->push_color(p_context.get_input(3));
@@ -115,6 +134,7 @@ Node* OScriptNodePrintStringInstance::_get_or_create_ui_container(Node* p_root_n
         container->set_position(Vector2(10, 10));
         container->set_custom_minimum_size(Vector2(300, 100));
         container->set_name("PrintStringUI");
+        container->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
 
         // We maintain a cache of the container by scene to guarantee that if multiple PrintString
         // nodes attempt to render text, the UI will only have a single container.
@@ -142,9 +162,9 @@ Node* OScriptNodePrintStringInstance::_get_or_create_ui_container(Node* p_root_n
     return node;
 }
 
-SceneTree* OScriptNodePrintStringInstance::_get_tree()
+SceneTree* OScriptNodePrintStringInstance::_get_tree(OScriptExecutionContext& p_context)
 {
-    return Object::cast_to<Node>(_instance->get_owner())->get_tree();
+    return Object::cast_to<Node>(p_context.get_owner())->get_tree();
 }
 
 void OScriptNodePrintStringInstance::_ui_container_node_added([[maybe_unused]] Node* p_node)
@@ -173,13 +193,13 @@ void OScriptNodePrintStringInstance::_ui_container_node_removed(Node* p_node)
 
 void OScriptNodePrintString::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
-    create_pin(PD_Input, "Text", Variant::STRING, "Hello")->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "PrintToScreen", Variant::BOOL, true)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "PrintToLog", Variant::BOOL, true)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "TextColor", Variant::COLOR, Color(1, 1, 1))->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Input, "Duration", Variant::FLOAT, 2)->set_flags(OScriptNodePin::Flags::DATA);
-    create_pin(PD_Output, "ExecOut")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("Text", Variant::STRING), "Hello");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("PrintToScreen", Variant::BOOL), true);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("PrintToLog", Variant::BOOL), true);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("TextColor", Variant::COLOR), Color(1, 1, 1));
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("Duration", Variant::FLOAT), 2);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("ExecOut"));
 
     super::allocate_default_pins();
 }
@@ -190,11 +210,25 @@ String OScriptNodePrintString::get_tooltip_text() const
                    "If Print To Log is true, it will be shown in the output window.");
 }
 
-OScriptNodeInstance* OScriptNodePrintString::instantiate(OScriptInstance* p_instance)
+void OScriptNodePrintString::reallocate_pins_during_reconstruction(const Vector<Ref<OScriptNodePin>>& p_old_pins)
+{
+    super::reallocate_pins_during_reconstruction(p_old_pins);
+
+    for (const Ref<OScriptNodePin>& pin : p_old_pins)
+    {
+        if (pin->is_input() && !pin->is_execution())
+        {
+            Ref<OScriptNodePin> new_pin = find_pin(pin->get_pin_name(), PD_Input);
+            if (new_pin.is_valid())
+                new_pin->set_default_value(pin->get_effective_default_value());
+        }
+    }
+}
+
+OScriptNodeInstance* OScriptNodePrintString::instantiate()
 {
     OScriptNodePrintStringInstance* i = memnew(OScriptNodePrintStringInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 

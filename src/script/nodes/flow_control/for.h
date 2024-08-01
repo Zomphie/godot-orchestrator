@@ -25,6 +25,7 @@
 class OScriptNodeForLoop : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeForLoop, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     bool _with_break{ false };  //! Whether break is enabled
@@ -50,8 +51,9 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "flow_control"; }
     String get_icon() const override;
+    PackedStringArray get_keywords() const override { return Array::make("for", "loop"); }
     void get_actions(List<Ref<OScriptAction>>& p_action_list) override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
 };

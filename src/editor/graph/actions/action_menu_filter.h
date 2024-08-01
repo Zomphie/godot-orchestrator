@@ -18,11 +18,14 @@
 #define ORCHESTRATOR_GRAPH_ACTION_MENU_ITEM_FILTER_H
 
 #include "action_menu_item.h"
+#include "script/target_object.h"
+
 #include <godot_cpp/templates/vector.hpp>
 
 using namespace godot;
 
 /// Forward declarations
+class Orchestration;
 class OrchestratorGraphEdit;
 class OrchestratorGraphNodePin;
 
@@ -35,6 +38,9 @@ struct OrchestratorGraphActionContext
 
     /// List of OrchestratorGraphNodePin references to obtain actions for.
     List<OrchestratorGraphNodePin*> pins;
+
+    /// Get access to the underlying orchestration
+    Orchestration* get_orchestration() const;
 };
 
 /// An action filter object, passed to the EditorActionMenu to filter all available actions
@@ -79,7 +85,12 @@ struct OrchestratorGraphActionFilter
     Vector<StringName> target_classes;
 
     /// The target object to expressly get context details about
-    Object* target_object{ nullptr };
+    Ref<OScriptTargetObject> target_object;
+
+    _FORCE_INLINE_ bool has_target_object() const { return !target_object.is_null() && target_object->has_target(); }
+    _FORCE_INLINE_ StringName get_target_class() const { return target_object->get_target_class(); }
+
+    _FORCE_INLINE_ Orchestration* get_orchestration() const { return context.get_orchestration(); }
 };
 
 #endif  // ORCHESTRATOR_GRAPH_ACTION_MENU_ITEM_FILTER_H

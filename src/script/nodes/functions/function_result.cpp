@@ -16,6 +16,8 @@
 //
 #include "function_result.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeFunctionResultInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeFunctionResult);
@@ -25,7 +27,7 @@ public:
 
     int get_working_memory_size() const override { return 1; }
 
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         if (_has_return)
         {
@@ -47,12 +49,12 @@ void OScriptNodeFunctionResult::pre_remove()
     // When this node is removed, clear the function's return value
     Ref<OScriptFunction> function = get_function();
     if (function.is_valid())
-        _function->set_return_type(Variant::NIL);
+        _function->set_has_return_value(false);
 }
 
 void OScriptNodeFunctionResult::allocate_default_pins()
 {
-    create_pin(PD_Input, "ExecIn")->set_flags(OScriptNodePin::Flags::EXECUTION);
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"));
 
     Ref<OScriptFunction> function = get_function();
     if (function.is_valid())
@@ -71,26 +73,24 @@ String OScriptNodeFunctionResult::get_tooltip_text() const
     return "The node terminates the function's execution and returns any output values.";
 }
 
-bool OScriptNodeFunctionResult::validate_node_during_build() const
+void OScriptNodeFunctionResult::validate_node_during_build(BuildLog& p_log) const
 {
-    if (!super::validate_node_during_build())
-        return false;
+    super::validate_node_during_build(p_log);
 
-    Ref<OScriptFunction> function = get_function();
+    const Ref<OScriptFunction> function = get_function();
     if (function.is_valid())
     {
         const String function_name = function->get_function_name();
         for (const Ref<OScriptNodePin>& pin : get_all_pins())
         {
             // Check hidden first because those are not assigned cached pin indices
-            if (!pin->get_flags().has_flag(OScriptNodePin::Flags::HIDDEN) && !pin->has_any_connections())
+            if (!pin->is_hidden() && !pin->has_any_connections())
             {
-                ERR_PRINT("There is no connection to function " + function_name + " output pin " + pin->get_pin_name());
-                return false;
+                if (pin->get_property_info().type >= Variant::RID)
+                    p_log.error(this, pin, "Requires a connection.");
             }
         }
     }
-    return true;
 }
 
 bool OScriptNodeFunctionResult::is_compatible_with_graph(const Ref<OScriptGraph>& p_graph) const
@@ -100,16 +100,15 @@ bool OScriptNodeFunctionResult::is_compatible_with_graph(const Ref<OScriptGraph>
 
 void OScriptNodeFunctionResult::post_placed_new_node()
 {
-    Ref<OScriptGraph> graph = get_owning_script()->find_graph(this);
+    const Ref<OScriptGraph> graph = get_owning_graph();
     if (graph.is_valid() && graph->get_flags().has_flag(OScriptGraph::GF_FUNCTION))
     {
         // There is only ever 1 function node in a function graph and the function node cannot
         // be deleted by the user, and so we can safely look that up on the graph's metadata.
-        int function_node_id = graph->get_functions()[0];
-        Ref<OScriptNodeFunctionTerminator> func = get_owning_script()->get_node(function_node_id);
-        if (func.is_valid())
+        const Vector<Ref<OScriptFunction>> functions = graph->get_functions();
+        if (!functions.is_empty())
         {
-            _function = func->get_function();
+            _function = functions[0];
             _guid = _function->get_guid();
             reconstruct_node();
         }
@@ -127,11 +126,10 @@ bool OScriptNodeFunctionResult::can_user_delete_node() const
     return true;
 }
 
-OScriptNodeInstance* OScriptNodeFunctionResult::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeFunctionResult::instantiate()
 {
     OScriptNodeFunctionResultInstance* i = memnew(OScriptNodeFunctionResultInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_has_return = _function->has_return_type();
     return i;
 }

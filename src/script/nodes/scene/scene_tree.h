@@ -23,6 +23,12 @@
 class OScriptNodeSceneTree : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeSceneTree, OScriptNode);
+    static void _bind_methods() { }
+
+protected:
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
 
 public:
     //~ Begin OScriptNode Interface
@@ -31,7 +37,8 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "scene"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    String get_help_topic() const override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 

@@ -16,12 +16,14 @@
 //
 #include "branch.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeBranchInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeBranch);
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         return p_context.get_input(0) ? 0 : 1;
     }
@@ -31,14 +33,11 @@ public:
 
 void OScriptNodeBranch::allocate_default_pins()
 {
-    Ref<OScriptNodePin> exec_in = create_pin(PD_Input, "ExecIn");
-    exec_in->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
-    exec_in->set_label("if [condition]");
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"))->set_label("if [condition]");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("condition", Variant::BOOL), false);
 
-    create_pin(PD_Input, "condition", Variant::BOOL, false)->set_flags(OScriptNodePin::DATA);
-
-    create_pin(PD_Output, "true")->set_flags(OScriptNodePin::EXECUTION | OScriptNodePin::SHOW_LABEL);
-    create_pin(PD_Output, "false")->set_flags(OScriptNodePin::EXECUTION | OScriptNodePin::SHOW_LABEL);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("true"))->show_label();
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("false"))->show_label();
 
     super::allocate_default_pins();
 }
@@ -58,10 +57,9 @@ String OScriptNodeBranch::get_icon() const
     return "VcsBranches";
 }
 
-OScriptNodeInstance* OScriptNodeBranch::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeBranch::instantiate()
 {
     OScriptNodeBranchInstance* i = memnew(OScriptNodeBranchInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }

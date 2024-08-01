@@ -17,6 +17,7 @@
 #include "operator_node.h"
 
 #include "common/dictionary_utils.h"
+#include "common/property_utils.h"
 #include "common/string_utils.h"
 #include "common/variant_utils.h"
 
@@ -29,7 +30,7 @@ class OScriptNodeOperatorInstance : public OScriptNodeInstance
     bool _unary{ false };
     Variant _result;
 
-    int _evaluate_variant(OScriptNodeExecutionContext& p_context, const Variant& p_arg0, const Variant& p_arg1)
+    int _evaluate_variant(OScriptExecutionContext& p_context, const Variant& p_arg0, const Variant& p_arg1)
     {
         bool valid = true;
         Variant::evaluate(_operator, p_arg0, p_arg1, _result, valid);
@@ -39,7 +40,7 @@ class OScriptNodeOperatorInstance : public OScriptNodeInstance
                                            _operator,
                                            Variant::get_type_name(p_arg0.get_type()), p_arg0,
                                            Variant::get_type_name(p_arg1.get_type()), p_arg1);
-            p_context.set_error(GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT, message);
+            p_context.set_error(message);
             return -1 | STEP_FLAG_END;
         }
         p_context.set_output(0, &_result);
@@ -47,7 +48,7 @@ class OScriptNodeOperatorInstance : public OScriptNodeInstance
     }
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         if (_unary)
             return _evaluate_variant(p_context, p_context.get_input(0), Variant());
@@ -196,13 +197,19 @@ bool OScriptNodeOperator::_is_unary() const
     return _info.right_type_name.is_empty();
 }
 
+void OScriptNodeOperator::post_initialize()
+{
+    reconstruct_node();
+    super::post_initialize();
+}
+
 void OScriptNodeOperator::allocate_default_pins()
 {
-    create_pin(PD_Input, "a", _info.left_type);
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("a", _info.left_type));
     if (!_is_unary())
-        create_pin(PD_Input, "b", _info.right_type);
+        create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("b", _info.right_type));
 
-    create_pin(PD_Output, "return_value", _info.return_type);
+    create_pin(PD_Output, PT_Data, PropertyUtils::make_typed("result", _info.return_type));
 
     super::allocate_default_pins();
 }
@@ -279,11 +286,10 @@ String OScriptNodeOperator::get_node_title() const
         return vformat(_get_expression(), "A", "B");
 }
 
-OScriptNodeInstance* OScriptNodeOperator::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeOperator::instantiate()
 {
     OScriptNodeOperatorInstance* i = memnew(OScriptNodeOperatorInstance);
     i->_node = this;
-    i->_instance = p_instance;
     i->_unary = _is_unary();
     i->_operator = VariantOperators::to_engine(_info.op);
     return i;
@@ -307,6 +313,17 @@ void OScriptNodeOperator::initialize(const OScriptNodeInitContext& p_context)
     _info.return_type = VariantUtils::to_type(data["return_type"]);
 
     super::initialize(p_context);
+}
+
+void OScriptNodeOperator::validate_node_during_build(BuildLog& p_log) const
+{
+    Ref<OScriptNodePin> result = find_pin("result", PD_Output);
+    if (!result.is_valid())
+        p_log.error(this, "No result pin found, right-click node and select 'Refresh Nodes'.");
+    else if (!result->has_any_connections())
+        p_log.error(this, result, "Requires a connection.");
+
+    super::validate_node_during_build(p_log);
 }
 
 bool OScriptNodeOperator::is_supported(Variant::Type p_type)

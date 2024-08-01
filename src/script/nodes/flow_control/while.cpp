@@ -16,17 +16,19 @@
 //
 #include "while.h"
 
+#include "common/property_utils.h"
+
 class OScriptNodeWhileInstance : public OScriptNodeInstance
 {
     DECLARE_SCRIPT_NODE_INSTANCE(OScriptNodeWhile);
 
 public:
-    int step(OScriptNodeExecutionContext& p_context) override
+    int step(OScriptExecutionContext& p_context) override
     {
         Variant& condition = p_context.get_input(0);
         if (condition.get_type() != Variant::BOOL)
         {
-            p_context.set_invalid_argument(this, 0, condition.get_type(), Variant::BOOL);
+            p_context.set_expected_type_error(0, condition.get_type(), Variant::BOOL);
             return -1;
         }
 
@@ -39,14 +41,11 @@ public:
 
 void OScriptNodeWhile::allocate_default_pins()
 {
-    Ref<OScriptNodePin> exec_in = create_pin(PD_Input, "ExecIn");
-    exec_in->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
-    exec_in->set_label("while [condition]");
+    create_pin(PD_Input, PT_Execution, PropertyUtils::make_exec("ExecIn"))->set_label("while [condition]");
+    create_pin(PD_Input, PT_Data, PropertyUtils::make_typed("condition", Variant::BOOL), _condition);
 
-    create_pin(PD_Input, "condition", Variant::BOOL, _condition)->set_flags(OScriptNodePin::Flags::DATA);
-
-    create_pin(PD_Output, "repeat")->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
-    create_pin(PD_Output, "done")->set_flags(OScriptNodePin::Flags::EXECUTION | OScriptNodePin::Flags::SHOW_LABEL);
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("repeat"))->show_label();
+    create_pin(PD_Output, PT_Execution, PropertyUtils::make_exec("done"))->show_label();
 }
 
 String OScriptNodeWhile::get_tooltip_text() const
@@ -64,11 +63,10 @@ String OScriptNodeWhile::get_icon() const
     return "Loop";
 }
 
-OScriptNodeInstance* OScriptNodeWhile::instantiate(OScriptInstance* p_instance)
+OScriptNodeInstance* OScriptNodeWhile::instantiate()
 {
     OScriptNodeWhileInstance* i = memnew(OScriptNodeWhileInstance);
     i->_node = this;
-    i->_instance = p_instance;
     return i;
 }
 

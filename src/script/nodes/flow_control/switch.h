@@ -24,6 +24,7 @@
 class OScriptNodeSwitch : public OScriptEditablePinNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeSwitch, OScriptEditablePinNode);
+    static void _bind_methods() { }
 
 protected:
     int _cases{ 0 };     //! Transient case count
@@ -34,6 +35,10 @@ protected:
     bool _set(const StringName& p_name, const Variant& p_value);
     //~ End Wrapped Interface
 
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
+
     void _unlink_pins(int p_new_cases);
 
 public:
@@ -43,7 +48,7 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "flow_control"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 
     //~ Begin OScriptEditablePinNode Interface
@@ -58,6 +63,7 @@ public:
 class OScriptNodeSwitchEditablePin : public OScriptEditablePinNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeSwitchEditablePin, OScriptEditablePinNode);
+    static void _bind_methods() { }
 
 protected:
     PackedStringArray _pin_names;
@@ -97,6 +103,7 @@ public:
 class OScriptNodeSwitchString : public OScriptNodeSwitchEditablePin
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeSwitchString, OScriptNodeSwitchEditablePin);
+    static void _bind_methods() { }
 
 protected:
     //~ Begin OScriptNodeSwitchEditablePin Interface
@@ -108,7 +115,7 @@ protected:
 public:
     //~ Begin OScriptNode Interface
     String get_node_title() const override { return "Switch on String"; }
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 
@@ -117,6 +124,7 @@ public:
 class OScriptNodeSwitchInteger : public OScriptNodeSwitchEditablePin
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeSwitchInteger, OScriptNodeSwitchEditablePin);
+    static void _bind_methods() { }
 
 protected:
     int _start_index{ 0 };
@@ -138,7 +146,7 @@ protected:
 public:
     //~ Begin OScriptNode Interface
     String get_node_title() const override { return "Switch on Integer"; }
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     //~ End OScriptNode Interface
 };
 
@@ -147,20 +155,24 @@ public:
 class OScriptNodeSwitchEnum : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeSwitchEnum, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     String _enum_name; //! Transient enum name
 
+    //~ Begin OScriptNode Interface
+    void _upgrade(uint32_t p_version, uint32_t p_current_version) override;
+    //~ End OScriptNode Interface
+
 public:
     //~ Begin OScriptNode Interface
     void post_initialize() override;
-    void post_placed_new_node() override;
     void allocate_default_pins() override;
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "flow_control"; }
     String get_icon() const override { return "ClassList"; }
     String get_tooltip_text() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
 };

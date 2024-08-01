@@ -17,7 +17,7 @@
 #ifndef ORCHESTRATOR_SCRIPT_PLACEHOLDER_INSTANCE_H
 #define ORCHESTRATOR_SCRIPT_PLACEHOLDER_INSTANCE_H
 
-#include "instance_base.h"
+#include "script/instances/instance_base.h"
 
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/templates/hash_map.hpp>
@@ -35,13 +35,14 @@ using namespace godot;
 ///
 class OScriptPlaceHolderInstance : public OScriptInstanceBase
 {
-    Ref<OScript> _script;  //! The script this instance represents
-    Object* _owner;        //! The owning object of the script
-    HashMap<StringName, Variant> _variables;
+    Ref<OScript> _script;                       //! The script this instance represents
+    Object* _owner;                             //! The owning object of the script
+    HashMap<StringName, Variant> _values;
+    List<PropertyInfo> _properties;
 
 public:
     /// Defines details about the script instance to be passed to Godot
-    static const GDExtensionScriptInstanceInfo2 INSTANCE_INFO;
+    static const OScriptInstanceInfo INSTANCE_INFO;
 
     /// Creates an OScriptPlaceHolderInstance
     /// @param p_script the orchestrator script this instance represents
@@ -49,7 +50,7 @@ public:
     OScriptPlaceHolderInstance(Ref<OScript> p_script, Object* p_owner);
 
     /// OScriptPlaceHolderInstance destructor
-    ~OScriptPlaceHolderInstance() override = default;
+    ~OScriptPlaceHolderInstance() override;
 
     //~ Begin OScriptInstanceBase Interface
     bool set(const StringName& p_name, const Variant& p_value, PropertyError* r_err) override;
@@ -71,6 +72,8 @@ public:
     void notification(int32_t p_what, bool p_reversed);
     void to_string(GDExtensionBool* r_is_valid, String* r_out);
     //~ End ScriptInstanceInfo2 Interface
+
+    void update(const List<PropertyInfo>& p_properties, const HashMap<StringName, Variant>& p_values);
 };
 
 #endif  // ORCHESTRATOR_SCRIPT_PLACEHOLDER_INSTANCE_H

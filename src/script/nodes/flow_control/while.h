@@ -23,6 +23,7 @@
 class OScriptNodeWhile : public OScriptNode
 {
     ORCHESTRATOR_NODE_CLASS(OScriptNodeWhile, OScriptNode);
+    static void _bind_methods() { }
 
 protected:
     bool _condition = false;
@@ -34,7 +35,8 @@ public:
     String get_node_title() const override;
     String get_node_title_color_name() const override { return "flow_control"; }
     String get_icon() const override;
-    OScriptNodeInstance* instantiate(OScriptInstance* p_instance) override;
+    PackedStringArray get_keywords() const override { return Array::make("while", "loop"); }
+    OScriptNodeInstance* instantiate() override;
     void initialize(const OScriptNodeInitContext& p_context) override;
     //~ End OScriptNode Interface
 };

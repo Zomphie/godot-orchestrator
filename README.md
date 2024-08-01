@@ -1,6 +1,6 @@
 ![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/20bdd53e-9a27-4326-1b11-65fe443e0400/public)
 
-![Godot v4.2](https://img.shields.io/badge/Godot-v4.2-%23478cbf?logo=godot-engine&logoColor=white&style=flat-square)
+![Godot v4.3](https://img.shields.io/badge/Godot-v4.3-%23478cbf?logo=godot-engine&logoColor=white&style=flat-square)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/Vahera/godot-orchestrator?&style=flat-square)
 [![LICENSE](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/Vahera/godot-orchestrator/blob/main/LICENSE)
 
@@ -14,13 +14,24 @@ Whether you are an experienced Godot veteran or an aspiring developer eager to g
 
 The following screenshots only scratch the surface of what the plug-in offers out of the box, with much more in future builds.
 
-![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/69580c27-8002-41a1-8895-98af984b3700/public)
+![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/f1f2e971-aa40-485e-19e2-9ba8834cb500/public)
 
-![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/2afcb531-6791-4746-fe39-8e20343f2700/public)
+![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/4c99bdef-ed17-46b4-bcad-e71d3ddb7700/public)
 
-![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/dbcc1f15-2b12-4b94-54ce-8d5100232c00/public)
+![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/db3d458e-3bfd-4e15-ea71-cc75dbb90e00/public)
 
-![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/65f62cb9-f880-4ce1-4f26-007e5efeb100/public)
+![screen-shot](https://cdn.vahera.cloud/utG8NiO3oN8sfXvI2ZZ0zg/b5ca95e3-1a3c-4376-dacb-df463ef3fa00/public)
+
+## Godot Compatibility
+
+Orchestrator is made using Godot GDExtension technology, which has certain ABI (application binary interface) requirements that must be followed to guarantee that the integration between extensions and the engine work as expected.
+The following table describes which Orchestrator version you should use based on your Godot editor version.
+
+Using the wrong version of Orchestrator with the Godot editor may result in unexpected behavior or crashes.
+
+| Godot 4.3+              | Godot 4.2             |
+|-------------------------|-----------------------|
+| v2.1.x+ (`main` branch) | v2.0.x (`2.0` branch) |
 
 ## 🚀 Features
 
@@ -36,7 +47,7 @@ The following screenshots only scratch the surface of what the plug-in offers ou
 
 ## 📑 Documentation
 
-For complete documentation, see https://www.vahera.com/docs.
+For complete documentation, see https://docs.cratercrash.com/orchestrator.
 
 ## 🗒️ Changelog
 
