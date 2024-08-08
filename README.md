@@ -22,7 +22,7 @@ The following screenshots only scratch the surface of what the plug-in offers ou
 
 ![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/74f38a8d-8afe-420b-b7e7-db6ef75e9800/public)
 
-## Godot Compatibility
+## ![icon](https://cdn.cratercrash.space/cdn-cgi/image/width=18/utG8NiO3oN8sfXvI2ZZ0zg/54f147f9-04d3-4ade-3517-59561a590c00/public) Godot Compatibility
 
 Orchestrator is made using Godot GDExtension technology, which has certain ABI (application binary interface) requirements that must be followed to guarantee that the integration between extensions and the engine work as expected.
 The following table describes which Orchestrator version you should use based on your Godot editor version.
@@ -33,7 +33,7 @@ Using the wrong version of Orchestrator with the Godot editor may result in unex
 |-------------------------|-----------------------|
 | v2.1.x+ (`main` branch) | v2.0.x (`2.0` branch) |
 
-## 🚀 Features
+## ![icon](https://cdn.cratercrash.space/cdn-cgi/image/width=18/utG8NiO3oN8sfXvI2ZZ0zg/54f147f9-04d3-4ade-3517-59561a590c00/public) Features
 
 * A complete visual scripting solution for Godot.
 * Compatible with Godot 4.2+ using Godot GDExtension plug-in technology.
@@ -45,26 +45,26 @@ Using the wrong version of Orchestrator with the Godot editor may result in unex
 * Design complex dialogue conversations for NPCs for any game.
 * Work with any Godot engine data type, including complex types like Arrays or Dictionaries.
 
-## 📑 Documentation
+## ![icon](https://cdn.cratercrash.space/cdn-cgi/image/width=18/utG8NiO3oN8sfXvI2ZZ0zg/54f147f9-04d3-4ade-3517-59561a590c00/public) Documentation
 
 For complete documentation, see https://docs.cratercrash.com/orchestrator.
 
-## 🗒️ Changelog
+## ![icon](https://cdn.cratercrash.space/cdn-cgi/image/width=18/utG8NiO3oN8sfXvI2ZZ0zg/54f147f9-04d3-4ade-3517-59561a590c00/public) Changelog
 
 See [CHANGELOG](https://github.com/CraterCrash/godot-orchestrator/blob/main/CHANGELOG.md).
 
-## 📝 Licenses
+## ![icon](https://cdn.cratercrash.space/cdn-cgi/image/width=18/utG8NiO3oN8sfXvI2ZZ0zg/54f147f9-04d3-4ade-3517-59561a590c00/public) Licenses
 
 - Source code: [Apache-2.0 License](/LICENSE)
 - Godot logo: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 - Orchestrator logo: [&copy; 2022-Present Crater Crash Studios. All Rights Reserved](https://cratercrash.com/legal/webcn/)
 
-## 💬 Community
+## ![icon](https://cdn.cratercrash.space/cdn-cgi/image/width=18/utG8NiO3oN8sfXvI2ZZ0zg/54f147f9-04d3-4ade-3517-59561a590c00/public) Community
 
 - [Discord](https://discord.com/invite/J3UWtzWSkT)
 - [Mastodon](https://vahera.social/@orchestrator)
 
-## 👏 Contributors
+## ![icon](https://cdn.cratercrash.space/cdn-cgi/image/width=18/utG8NiO3oN8sfXvI2ZZ0zg/54f147f9-04d3-4ade-3517-59561a590c00/public) Contributors
 
 <a href="https://github.com/Vahera/godot-orchestrator/graphs/contributors">
   <img src="https://contributors-img.web.app/image?repo=vahera/godot-orchestrator" />
