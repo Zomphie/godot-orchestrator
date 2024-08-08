@@ -14,13 +14,13 @@ Whether you are an experienced Godot veteran or an aspiring developer eager to g
 
 The following screenshots only scratch the surface of what the plug-in offers out of the box, with much more in future builds.
 
-![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/4e02bf7b-5e80-4d85-5d66-704f42546300/public)
+![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/aca99d6d-9685-44bf-87b1-17c2345cac00/public)
 
-![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/e3d2ed83-9fe4-4dad-16f7-386b2ae77700/public)
+![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/9edf6540-8164-45b3-a609-81664dda2100/public)
 
-![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/74f8aad9-3cb5-48ce-fde4-53be00f74600/public)
+![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/fc4d84a2-8ab2-4f4a-007d-85cdfcceef00/public)
 
-![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/b03d7802-dab2-4791-42b6-2c8c4625af00/public)
+![screen-shot](https://cdn.cratercrash.space/utG8NiO3oN8sfXvI2ZZ0zg/74f38a8d-8afe-420b-b7e7-db6ef75e9800/public)
 
 ## Godot Compatibility
 
