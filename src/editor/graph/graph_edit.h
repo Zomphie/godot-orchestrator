@@ -66,6 +66,7 @@ class OrchestratorGraphEdit : public GraphEdit
     enum ContextMenuIds
     {
         CM_VARIABLE_GET,
+        CM_VARIABLE_GET_VALIDATED,
         CM_VARIABLE_SET,
         CM_PROPERTY_GET,
         CM_PROPERTY_SET,
@@ -327,6 +328,10 @@ private:
 
     /// Synchronizes the graph knots
     void _synchronize_graph_knots();
+
+    /// Remove all knots related to the specific connection id
+    /// @param p_connection_id
+    void _remove_connection_knots(uint64_t p_connection_id);
 
     /// Updates only the specific graph node
     /// @param p_node the node to update.

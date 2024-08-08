@@ -474,6 +474,10 @@ bool OScriptNodePin::can_accept(const Ref<OScriptNodePin>& p_pin) const
     if ((!is_execution() && p_pin->is_execution()) || (is_execution() && !p_pin->is_execution()))
         return false;
 
+    // Any pin can connect to a Boolean input pin.
+    if (_property.type == Variant::BOOL)
+        return true;
+
     // Types match
     if (_property.type == p_pin->get_type())
     {
@@ -517,6 +521,9 @@ bool OScriptNodePin::can_accept(const Ref<OScriptNodePin>& p_pin) const
         }
         return true;
     }
+
+    if (_property.type == Variant::STRING_NAME && p_pin->get_property_info().type == Variant::STRING)
+        return true;
 
     // Numeric conversions allows
     if (_property.type == Variant::INT || _property.type == Variant::FLOAT)

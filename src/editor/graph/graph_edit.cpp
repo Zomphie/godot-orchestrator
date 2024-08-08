@@ -43,6 +43,7 @@
 #include <godot_cpp/classes/geometry2d.hpp>
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/input_event_action.hpp>
+#include <godot_cpp/classes/input_event_key.hpp>
 #include <godot_cpp/classes/input_event_mouse_button.hpp>
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
 #include <godot_cpp/classes/method_tweener.hpp>
@@ -218,6 +219,7 @@ void OrchestratorGraphEdit::_notification(int p_what)
         _script_graph->connect("node_added", callable_mp(this, &OrchestratorGraphEdit::_on_graph_node_added));
         _script_graph->connect("node_removed", callable_mp(this, &OrchestratorGraphEdit::_on_graph_node_removed));
         _script_graph->connect("knots_updated", callable_mp(this, &OrchestratorGraphEdit::_synchronize_graph_knots));
+        _script_graph->connect("connection_knots_removed", callable_mp(this, &OrchestratorGraphEdit::_remove_connection_knots));
 
         // Wire up action menu
         _action_menu->connect("canceled", callable_mp(this, &OrchestratorGraphEdit::_on_action_menu_cancelled));
@@ -533,6 +535,15 @@ void OrchestratorGraphEdit::_gui_input(const Ref<InputEvent>& p_event)
             }
         }
     }
+
+    Ref<InputEventKey> key_event = p_event;
+    if (key_event.is_valid() && key_event->is_pressed() && key_event->get_keycode() == KEY_F9)
+    {
+        for_each_graph_node([](OrchestratorGraphNode* node) {
+            if (node->is_selected())
+                node->toggle_breakpoint();
+        });
+    }
 }
 
 bool OrchestratorGraphEdit::_can_drop_data(const Vector2& p_position, const Variant& p_data) const
@@ -679,16 +690,23 @@ void OrchestratorGraphEdit::_drop_data(const Vector2& p_position, const Variant&
         }
         else
         {
+            const bool validated = get_orchestration()->get_variable(variable_name)->get_variable_type() == Variant::OBJECT;
+
             // Create context-menu handlers
             Ref<OrchestratorGraphActionHandler> get_handler(memnew(OrchestratorGraphNodeSpawnerVariableGet(variable_name)));
             Ref<OrchestratorGraphActionHandler> set_handler(memnew(OrchestratorGraphNodeSpawnerVariableSet(variable_name)));
+            Ref<OrchestratorGraphActionHandler> get_validated_handler(memnew(OrchestratorGraphNodeSpawnerVariableGet(variable_name, true)));
 
             // Create context-menu to specify variable get or set choice
             _context_menu->clear();
             _context_menu->add_separator("Variable " + variable_name);
             _context_menu->add_item("Get " + variable_name, CM_VARIABLE_GET);
+            if (validated)
+                _context_menu->add_item("Get " + variable_name + " with validation", CM_VARIABLE_GET_VALIDATED);
             _context_menu->add_item("Set " + variable_name, CM_VARIABLE_SET);
             _context_menu->set_item_metadata(_context_menu->get_item_index(CM_VARIABLE_GET), get_handler);
+            if (validated)
+                _context_menu->set_item_metadata(_context_menu->get_item_index(CM_VARIABLE_GET_VALIDATED), get_validated_handler);
             _context_menu->set_item_metadata(_context_menu->get_item_index(CM_VARIABLE_SET), set_handler);
             _context_menu->reset_size();
             _context_menu->set_position(get_screen_position() + p_position);
@@ -1114,6 +1132,15 @@ void OrchestratorGraphEdit::_synchronize_graph_knots()
                _on_delete_nodes_requested(Array::make(name));
             }));
         }
+    }
+}
+
+void OrchestratorGraphEdit::_remove_connection_knots(uint64_t p_connection_id)
+{
+    if (_knots.erase(p_connection_id))
+    {
+        _store_connection_knots();
+        _synchronize_graph_knots();
     }
 }
 
@@ -1642,6 +1669,7 @@ void OrchestratorGraphEdit::_on_context_menu_selection(int p_id)
     switch (p_id)
     {
         case CM_VARIABLE_GET:
+        case CM_VARIABLE_GET_VALIDATED:
         case CM_VARIABLE_SET:
         case CM_PROPERTY_GET:
         case CM_PROPERTY_SET:
@@ -1803,7 +1831,7 @@ void OrchestratorGraphEdit::_on_paste_nodes_request()
     }
 
     Vector2 mouse_up_position = get_screen_position() + get_local_mouse_position();
-    Vector2 position_offset = (get_scroll_offset() + (mouse_up_position - get_global_position())) / get_zoom();
+    Vector2 position_offset = (get_scroll_offset() + (mouse_up_position - get_screen_position())) / get_zoom();
     if (is_snapping_enabled())
     {
         int snap = get_snapping_distance();

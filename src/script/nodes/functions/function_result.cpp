@@ -46,10 +46,14 @@ public:
 
 void OScriptNodeFunctionResult::pre_remove()
 {
-    // When this node is removed, clear the function's return value
+    // When this node is removed, clear the function's return value if this is the last return node
     Ref<OScriptFunction> function = get_function();
     if (function.is_valid())
-        _function->set_has_return_value(false);
+    {
+        Vector<Ref<OScriptNode>> return_nodes = function->get_return_nodes();
+        if (return_nodes.size() == 1)
+            _function->set_has_return_value(false);
+    }
 }
 
 void OScriptNodeFunctionResult::allocate_default_pins()
@@ -88,6 +92,81 @@ void OScriptNodeFunctionResult::validate_node_during_build(BuildLog& p_log) cons
             {
                 if (pin->get_property_info().type >= Variant::RID)
                     p_log.error(this, pin, "Requires a connection.");
+            }
+        }
+
+        // Nothing stops a user from adding multiple return nodes to a function graph
+        // The control flow connection validation should only be called once per function
+        if (function->get_return_node().ptr() == this)
+        {
+            // Collect all nodes that participate in the function graph
+            HashMap<int, Ref<OScriptNode>> graph_nodes;
+            for (const Ref<OScriptNode>& node : function->get_function_graph()->get_nodes())
+                graph_nodes[node->get_id()] = node;
+
+            // Collect all control flow connections in the function graph
+            RBSet<OScriptConnection> control_flows;
+            for (const OScriptConnection& E : function->get_orchestration()->get_connections())
+            {
+                if (graph_nodes.has(E.from_node))
+                {
+                    const Ref<OScriptNode> node = graph_nodes[E.from_node];
+                    for (const Ref<OScriptNodePin>& output : node->find_pins(PD_Output))
+                    {
+                        if (output.is_valid() && output->is_execution() && E.from_port == output->get_pin_index())
+                            control_flows.insert(E);
+                    }
+                }
+            }
+
+            RBSet<uint64_t> skipped;
+            List<uint64_t> seen;
+
+            seen.push_back(function->get_owning_node_id()); // starting node
+            seen.push_back(_id); // return node
+
+            // Traverse from the starting function node
+            List<int> queue;
+            queue.push_back(function->get_owning_node_id());
+            while(!queue.is_empty())
+            {
+                const int current_id = queue.front()->get();
+
+                for (const OScriptConnection& E : control_flows)
+                {
+                    const Ref<OScriptNode> source = graph_nodes[E.from_node];
+                    if (source.is_valid())
+                    {
+                        if (source->is_loop_port(E.from_port))
+                            skipped.insert(E.to_node);
+                    }
+
+                    if (skipped.has(E.from_node))
+                        skipped.insert(E.to_node);
+
+                    if (E.from_node == current_id && !seen.find(E.to_node))
+                    {
+                        queue.push_back(E.to_node);
+                        seen.push_back(E.to_node);
+                    }
+                }
+                queue.pop_front();
+            }
+
+            for (uint64_t node_id : seen)
+            {
+                if (skipped.has(node_id))
+                    continue;
+
+                const Ref<OScriptNode> node = graph_nodes[node_id];
+                if (node.is_valid())
+                {
+                    for (const Ref<OScriptNodePin>& output : node->find_pins(PD_Output))
+                    {
+                        if (output.is_valid() && output->is_execution() && !output->has_any_connections() && !node->is_loop_port(output->get_pin_index()))
+                            p_log.error(node.ptr(), output, "This pin should be connected to the return node.");
+                    }
+                }
             }
         }
     }

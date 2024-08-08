@@ -115,6 +115,18 @@ void OrchestratorSettings::remove_action_favorite(const String& p_action_name)
     }
 }
 
+void OrchestratorSettings::set_notify_prerelease_builds(bool p_notify_about_prereleases)
+{
+    ProjectSettings* ps = ProjectSettings::get_singleton();
+
+    const String key = "orchestrator/settings/notify_about_pre-releases";
+    if (!ps->has_setting(key))
+        return;
+
+    ps->set_setting(key, p_notify_about_prereleases);
+    ps->save();
+}
+
 void OrchestratorSettings::_register_deprecated_settings()
 {
     // Default settings (Orchestrator v1)
@@ -139,6 +151,7 @@ void OrchestratorSettings::_register_settings()
     _settings.emplace_back(RESOURCE_SETTING("settings/default_type", "Object", "Node"));
     _settings.emplace_back(SENUM_SETTING("settings/storage_format", "Text,Binary", "Text"));
     _settings.emplace_back(SENUM_SETTING("settings/log_level", "FATAL,ERROR,WARN,INFO,DEBUG,TRACE", "INFO"));
+    _settings.emplace_back(BOOL_SETTING("settings/notify_about_pre-releases", true));
 
     _settings.emplace_back(RANGE_SETTING("settings/runtime/max_call_stack", "256,1024,256", 1024));
     _settings.emplace_back(INT_SETTING("settings/runtime/max_loop_iterations", 1000000));
@@ -171,6 +184,8 @@ void OrchestratorSettings::_register_settings()
     _settings.emplace_back(COLOR_NO_ALPHA_SETTING("ui/node_colors/events", Color(0.467, 0.0, 0.0)));
     _settings.emplace_back(COLOR_NO_ALPHA_SETTING("ui/node_colors/flow_control", Color(0.132, 0.258, 0.266)));
     _settings.emplace_back(COLOR_NO_ALPHA_SETTING("ui/node_colors/function_call", Color(0.0, 0.2, 0.396)));
+    _settings.emplace_back(COLOR_NO_ALPHA_SETTING("ui/node_colors/orchestration_function_call", Color(0.0, 0.316, 0.601)));
+    _settings.emplace_back(COLOR_NO_ALPHA_SETTING("ui/node_colors/other_script_function_call", Color(0.027, 0.341, 0.504)));
     _settings.emplace_back(COLOR_NO_ALPHA_SETTING("ui/node_colors/pure_function_call", Color(0.133, 0.302, 0.114)));
     _settings.emplace_back(COLOR_NO_ALPHA_SETTING("ui/node_colors/function_terminator", Color(0.294, 0.0, 0.506)));
     _settings.emplace_back(COLOR_NO_ALPHA_SETTING("ui/node_colors/function_result", Color(1.0, 0.65, 0.4)));

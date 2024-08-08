@@ -64,6 +64,8 @@ class OrchestratorGraphNode : public GraphNode
         CM_COLLAPSE_FUNCTION,
         CM_EXPAND_NODE,
         CM_RESIZABLE,
+        CM_MAKE_PURE_GETTER,
+        CM_MAKE_VALIDATED_GETTER,
         CM_NODE_ACTION = 1000
     };
 
@@ -103,6 +105,9 @@ public:
     /// Get the script node
     /// @return the script node reference
     Ref<OScriptNode> get_script_node() { return _node; }
+
+    /// Toggles breakpoint on this node
+    void toggle_breakpoint() { _handle_context_menu(CM_TOGGLE_BREAKPOINT); }
 
     /// Get the graph node input pin at a given port
     /// @param p_port the port or slot index
