@@ -34,6 +34,7 @@
 #include "editor/graph/nodes/reroute_graph_node.h"
 #include "editor/graph/pins/pins.h"
 #include "editor/gui/about_dialog.h"
+#include "editor/gui/clipboard_conflict_dialog.h"
 #include "editor/gui/context_menu.h"
 #include "editor/gui/editor_log_event_router.h"
 #include "editor/gui/file_dialog.h"
@@ -46,6 +47,7 @@
 #include "editor/inspector/function_inspector_plugin.h"
 #include "editor/inspector/new_object_inspector_plugin.h"
 #include "editor/inspector/orchestration_inspector_plugin.h"
+#include "editor/inspector/properties/editor_property_annotations.h"
 #include "editor/inspector/properties/editor_property_class_name.h"
 #include "editor/inspector/properties/editor_property_extends.h"
 #include "editor/inspector/properties/editor_property_pin_properties.h"
@@ -103,6 +105,7 @@ void register_editor_types() {
     GDREGISTER_INTERNAL_CLASS(OrchestratorEditorTypeSelector)
     GDREGISTER_INTERNAL_CLASS(OrchestratorEditorLogEventRouter)
     GDREGISTER_INTERNAL_CLASS(OrchestratorEditorPropertyType)
+    GDREGISTER_INTERNAL_CLASS(OrchestratorEditorPropertyAnnotations)
     GDREGISTER_INTERNAL_CLASS(OrchestratorEditorPropertyClassName)
     GDREGISTER_INTERNAL_CLASS(OrchestratorEditorPropertyPinProperties)
     GDREGISTER_INTERNAL_CLASS(OrchestratorEditorPropertyExtends)
@@ -139,6 +142,7 @@ void register_editor_types() {
     GDREGISTER_INTERNAL_CLASS(OrchestratorEditorComponentView)
     GDREGISTER_INTERNAL_CLASS(OrchestratorScriptComponentsContainer)
     GDREGISTER_INTERNAL_CLASS(OrchestratorGotoNodeDialog)
+    GDREGISTER_INTERNAL_CLASS(OrchestratorEditorClipboardConflictDialog)
     GDREGISTER_INTERNAL_CLASS(OrchestratorUpdaterButton)
     GDREGISTER_INTERNAL_CLASS(OrchestratorUpdaterVersionPicker)
     GDREGISTER_INTERNAL_CLASS(OrchestratorUpdaterReleaseNotesDialog)

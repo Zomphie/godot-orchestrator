@@ -19,9 +19,9 @@
 #include "actions/registry.h"
 #include "api/extension_db.h"
 #include "common/callable_lambda.h"
+#include "common/dictionary_utils.h"
 #include "common/macros.h"
 #include "common/name_utils.h"
-#include "common/resource_utils.h"
 #include "common/scene_utils.h"
 #include "common/settings.h"
 #include "core/godot/core_string_names.h"
@@ -80,6 +80,7 @@ OrchestratorEditorGraphPanel* OrchestratorScriptGraphEditorView::_create_graph_t
 
     tab_panel->connect("validate_script", callable_mp_this(_queue_validate_script));
     tab_panel->connect("focus_requested", callable_mp_this(_focus_object));
+    tab_panel->connect("event_spawn_requested", callable_mp_this(_event_spawn_requested));
 
     // Wire up component callbacks
     _components->notify_graph_opened(tab_panel);
@@ -135,6 +136,9 @@ void OrchestratorScriptGraphEditorView::_close_graph_editor(const String& p_name
     if (tab_panel && tab_panel != _event_graph) {
         _store_graph_tab_state(tab_panel->get_name(), _get_graph_tab_state(tab_panel, false));
         tab_panel->queue_free();
+
+        // The tab container settles on its new current tab only after the panel is freed
+        callable_mp_this(_notify_active_graph).call_deferred();
     }
 }
 
@@ -173,6 +177,14 @@ void OrchestratorScriptGraphEditorView::_go_to_graph_tab(int p_index) {
     if (current_tab_panel) {
         validate();
     }
+
+    _notify_active_graph();
+}
+
+void OrchestratorScriptGraphEditorView::_notify_active_graph() {
+    // Scoped component views (local variables) follow the active tab, including when no tab remains
+    OrchestratorEditorGraphPanel* active_panel = _tab_container->get_tab_count() > 0 ? _get_active_graph_tab() : nullptr;
+    _components->notify_active_graph_changed(active_panel ? active_panel->get_graph() : Ref<OrchestrationGraph>());
 }
 
 void OrchestratorScriptGraphEditorView::_close_graph_tab(int p_index) {
@@ -414,6 +426,21 @@ void OrchestratorScriptGraphEditorView::_focus_object(Object* p_object) {
             callable_mp_this(_scroll_to_graph_node).bind(function->get_owning_node_id()).call_deferred();
         }
     }
+}
+
+void OrchestratorScriptGraphEditorView::_event_spawn_requested(const Dictionary& p_method) {
+    // Raised by a panel whose graph is not an event graph, so the event goes to the default EventGraph
+    OrchestratorEditorGraphPanel* editor = _get_graph_tab("EventGraph");
+    ERR_FAIL_NULL_MSG(editor, "Cannot spawn the event, the EventGraph tab does not exist.");
+
+    _focus_graph_tab(editor);
+
+    NodeSpawnOptions options;
+    options.context.method = DictionaryUtils::to_method(p_method);
+    options.position = editor->get_scroll_offset() + (editor->get_size() / 2.0);
+    options.center_on_spawn = true;
+
+    editor->spawn_node<OScriptNodeEvent>(options);
 }
 
 void OrchestratorScriptGraphEditorView::_toggle_bookmark_for_selected_nodes() {
@@ -914,7 +941,7 @@ String OrchestratorScriptGraphEditorView::get_name() {
     String name = _script->get_path().get_file();
     if (name.is_empty()) {
         name = "[unsaved]";
-    } else if (ResourceUtils::is_builtin(_script)) {
+    } else if (_script->is_built_in()) {
         const String& script_name = _script->get_name();
         if (!script_name.is_empty()) {
             name = vformat("%s (%s)", script_name, name.get_slice("::", 0));
@@ -931,7 +958,7 @@ String OrchestratorScriptGraphEditorView::get_name() {
 Ref<Texture2D> OrchestratorScriptGraphEditorView::get_theme_icon() {
     if (get_parent_control() && _script.is_valid()) {
         String icon_name = _script->get_class();
-        if (ResourceUtils::is_builtin(_script)) {
+        if (_script->is_built_in()) {
             icon_name += "Internal";
         }
         if (get_parent_control()->has_theme_icon(icon_name, "EditorIcons")) {

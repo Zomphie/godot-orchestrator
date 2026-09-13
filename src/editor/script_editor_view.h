@@ -119,6 +119,7 @@ protected:
     Dictionary _get_graph_tab_state(OrchestratorEditorGraphPanel* p_tab_panel, bool p_open = true);
     void _store_graph_tab_state(const String& p_name, const Dictionary& p_state);
     void _go_to_graph_tab(int p_index);
+    void _notify_active_graph();
     void _close_graph_tab(int p_index);
     void _restore_next_tab();
 
@@ -134,6 +135,7 @@ protected:
     void _scroll_to_graph_node(int p_node_id);
 
     void _focus_object(Object* p_object);
+    void _event_spawn_requested(const Dictionary& p_method);
 
     void _toggle_bookmark_for_selected_nodes();
     void _remove_all_bookmarks();

@@ -18,6 +18,7 @@
 
 #include "api/extension_db.h"
 #include "editor/actions/definition.h"
+#include "orchestration/function.h"
 #include "orchestration/node.h"
 
 /// A standalone component that is responsible for being able to read and generate a set of actions based on
@@ -54,6 +55,9 @@ class OrchestratorEditorIntrospector {
     static void _register_static_methods(const String& p_lookup_class, const String& p_register_class, const String& p_category, ActionSet& r_actions);
     static void _register_global_class_static_methods(const String& p_class_name, const String& p_category, ActionSet& r_actions);
 
+    static void _register_constant(const String& p_node_type, const String& p_category, const String& p_owner, const String& p_constant_name, const Variant& p_value, const Dictionary& p_data, ActionSet& r_actions);
+    static void _register_class_constants(const String& p_class_name, ActionSet& r_actions);
+
 public:
 
     // registrar.filter->target_object->get_target()
@@ -63,6 +67,7 @@ public:
     // No specific registrar filter
     static void generate_actions_from_class(const StringName& p_class_name, ActionSet& r_actions);
     static void generate_actions_from_script(const Ref<Script>& p_script, ActionSet& r_actions);
+    static void generate_actions_from_function(const Ref<OScriptFunction>& p_function, ActionSet& r_actions);
 
     static void generate_actions_from_script_nodes(ActionSet& r_actions);
     static void generate_actions_from_variant_types(ActionSet& r_actions);

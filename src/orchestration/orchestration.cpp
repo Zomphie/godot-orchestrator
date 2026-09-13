@@ -19,6 +19,8 @@
 #include "common/dictionary_utils.h"
 #include "common/method_utils.h"
 #include "common/name_utils.h"
+#include "common/property_utils.h"
+#include "common/resource_utils.h"
 #include "common/scene_utils.h"
 #include "common/string_utils.h"
 #include "common/variant_utils.h"
@@ -30,6 +32,15 @@
 #include "script/script_server.h"
 
 #include <godot_cpp/classes/os.hpp>
+
+namespace {
+    struct NodeIdComparator {
+        template <typename T>
+        bool operator()(const Ref<T>& p_a, const Ref<T>& p_b) const {
+            return p_a->get_id() < p_b->get_id();
+        }
+    };
+}
 
 void Orchestration::ConnectionCache::_rebuild() const {
     if (!_dirty) {
@@ -208,8 +219,7 @@ void Orchestration::_fix_orphans() {
             continue;
         }
 
-        const String path = _self ? _self->get_path() : _script_path;
-        WARN_PRINT(vformat("Removed orphan node %d (%s) from script %s.", E.key, E.value->get_class(), path));
+        WARN_PRINT(vformat("Removed orphan node %d (%s) from script %s.", E.key, E.value->get_class(), get_orchestration_path()));
         orphans.push_back(E.key);
     }
 
@@ -235,6 +245,414 @@ void Orchestration::_fix_orphans() {
             _connection_cache.erase(C);
         }
     }
+}
+
+void Orchestration::_fix_duplicate_event_nodes() {
+    // Orchestrations written by 2.4.x and 2.5.x allowed an event node to be duplicated in place, which bound two
+    // event nodes to a single function. Only the function's recorded owner ever compiled, so the other nodes are
+    // removed. When the owner cannot be resolved, the function and every event node bound to it are dropped so
+    // the user can re-place the event. Event nodes whose function no longer exists are dropped too.
+    //
+    // This repair ships in 2.4, 2.5 and 2.6 and should be removed once support for 2.4 and 2.5 is dropped.
+    // It runs before _fix_orphans so that the connections of the removed nodes are pruned there.
+    const String path = get_orchestration_path();
+    String hint;
+    if (_self && OS::get_singleton()->has_feature("editor")) {
+        hint = " Please save orchestration '" + _self->get_path() + "' to apply changes.";
+    }
+
+    HashSet<int> removals;
+    Vector<StringName> dropped_functions;
+
+    for (const KeyValue<StringName, Ref<OScriptFunction>>& E : _functions) {
+        const Ref<OScriptFunction>& function = E.value;
+        if (!function.is_valid()) {
+            continue;
+        }
+
+        Vector<int> event_ids;
+        for (const KeyValue<int, Ref<OScriptNode>>& N : _nodes) {
+            const Ref<OScriptNodeEvent> event = N.value;
+            if (event.is_valid() && event->get_function() == function) {
+                event_ids.push_back(N.key);
+            }
+        }
+
+        if (event_ids.is_empty()) {
+            continue;
+        }
+
+        const int owner_id = function->get_owning_node_id();
+        if (event_ids.has(owner_id)) {
+            for (const int event_id : event_ids) {
+                if (event_id != owner_id) {
+                    WARN_PRINT(vformat(
+                        "Script '%s': Removed event node %d, a duplicate of node %d for function '%s'.%s",
+                        path, event_id, owner_id, E.key, hint));
+                    removals.insert(event_id);
+                }
+            }
+        } else {
+            for (const int event_id : event_ids) {
+                removals.insert(event_id);
+            }
+            dropped_functions.push_back(E.key);
+
+            WARN_PRINT(vformat(
+                "Script '%s': Removed function '%s' and its event node(s), the owner node %d could not be resolved. "
+                "Please re-place the event node.%s",
+                path, E.key, owner_id, hint));
+        }
+    }
+
+    for (const KeyValue<int, Ref<OScriptNode>>& N : _nodes) {
+        const Ref<OScriptNodeEvent> event = N.value;
+        if (event.is_valid() && !event->get_function().is_valid() && !removals.has(N.key)) {
+            WARN_PRINT(vformat(
+                "Script '%s': Removed event node %d, its function no longer exists. Please re-place the event node.%s",
+                path, N.key, hint));
+            removals.insert(N.key);
+        }
+    }
+
+    for (const StringName& function_name : dropped_functions) {
+        _functions.erase(function_name);
+    }
+
+    for (const int node_id : removals) {
+        const Ref<OScriptNode> node = _nodes[node_id];
+        for (const KeyValue<StringName, Ref<OScriptGraph>>& G : _graphs) {
+            G.value->remove_node(node);
+        }
+        _nodes.erase(node_id);
+    }
+}
+
+void Orchestration::_upgrade_local_variables() {
+    // Before format 5 a local variable was a pair of graph nodes: a declaration node whose output pin label
+    // was the name, and assign nodes that resolved the variable through their "variable" input connection.
+    // Each declaration becomes an OScriptLocalVariable on the function; every assign it fed becomes a Set
+    // node; the declaration itself becomes a Get node when anything other than an assign read it, and is
+    // removed otherwise. Node ids are preserved so comment attachments and exec chains survive.
+    //
+    // Only function graphs are converted. Get/Set nodes are not permitted in event graphs, so legacy nodes
+    // written into event graphs before GH-1687 are left alone and still compile through the legacy handlers.
+    // With Godot 5.0, support for event graph legacy local variable nodes will be dropped.
+    const String path = get_orchestration_path();
+    String hint;
+    if (_self && OS::get_singleton()->has_feature("editor")) {
+        hint = " Please save orchestration '" + _self->get_path() + "' to apply changes.";
+    }
+
+    // Terminal connection endpoint, recorded by id so it survives node replacement
+    struct Endpoint {
+        int node_id;
+        int port;
+    };
+
+    int converted_graphs = 0;
+    for (const KeyValue<StringName, Ref<OScriptGraph>>& G : _graphs) {
+        const Ref<OScriptGraph>& graph = G.value;
+
+        Vector<Ref<OScriptNodeLocalVariableLegacy>> declarations;
+        Vector<Ref<OScriptNodeAssignLocalVariableLegacy>> assigns;
+        for (const Ref<OScriptNode>& node : graph->get_nodes()) {
+            if (const Ref<OScriptNodeLocalVariableLegacy> declaration = node; declaration.is_valid()) {
+                declarations.push_back(declaration);
+            } else if (const Ref<OScriptNodeAssignLocalVariableLegacy> assign = node; assign.is_valid()) {
+                assigns.push_back(assign);
+            }
+        }
+
+        if (declarations.is_empty() && assigns.is_empty()) {
+            continue;
+        }
+
+        const Ref<OScriptFunction> function = find_function(graph->get_graph_name());
+        if (!graph->get_flags().has_flag(OScriptGraph::GF_FUNCTION) || !function.is_valid()) {
+            WARN_PRINT(vformat(
+                "Script '%s': Graph '%s' holds legacy local variable nodes outside a function graph; they were not "
+                "converted to function-scoped local variables.", path, graph->get_graph_name()));
+            continue;
+        }
+
+        // Deterministic order regardless of map iteration
+        declarations.sort_custom<NodeIdComparator>();
+        assigns.sort_custom<NodeIdComparator>();
+
+        // Names taken by function arguments never change; local names accumulate as declarations land
+        PackedStringArray taken_names;
+        for (const PropertyInfo& argument : function->get_method_info().arguments) {
+            taken_names.push_back(argument.name);
+        }
+
+        int next_unnamed = 1;
+        HashSet<int> converted_assigns;
+        converted_graphs++;
+
+        for (const Ref<OScriptNodeLocalVariableLegacy>& declaration : declarations) {
+            const int declaration_id = declaration->get_id();
+            const Ref<OScriptNodePin> output = declaration->find_pin("variable", PD_Output);
+
+            PropertyInfo info = output.is_valid() ? output->get_property_info() : PropertyUtils::make_variant("variable");
+            if (info.type == Variant::NIL) {
+                info.usage |= PROPERTY_USAGE_NIL_IS_VARIANT;
+            }
+
+            // 1. Declare the local variable on the function
+            String name = declaration->get_variable_name();
+            bool merged = false;
+            if (name.is_empty()) {
+                do {
+                    name = vformat("lval_%d", next_unnamed++);
+                } while (taken_names.has(name));
+            } else if (const Ref<OScriptLocalVariable> existing = function->find_local_variable(name); existing.is_valid()) {
+                // Two declaration nodes with the same label compiled to one identifier, so they merge
+                // when their types agree. Otherwise the later one is renamed so neither loses its type.
+                if (PropertyUtils::are_equal(existing->get_info(), info)) {
+                    merged = true;
+                } else {
+                    const String renamed = NameUtils::create_unique_name(name, taken_names);
+                    WARN_PRINT(vformat(
+                        "Script '%s': Function '%s' declared local variable '%s' twice with different types; the "
+                        "declaration at node %d was renamed to '%s'.%s",
+                        path, function->get_function_name(), name, declaration_id, renamed, hint));
+                    name = renamed;
+                }
+            } else if (!String(name).is_valid_identifier() || taken_names.has(name)) {
+                const String prefix = String(name).is_valid_identifier() ? name : String("lval");
+                const String renamed = NameUtils::create_unique_name(prefix, taken_names);
+                WARN_PRINT(vformat(
+                    "Script '%s': Function '%s' local variable '%s' at node %d collides with an argument or is not a "
+                    "valid identifier; it was renamed to '%s'.%s",
+                    path, function->get_function_name(), name, declaration_id, renamed, hint));
+                name = renamed;
+            }
+
+            if (!merged) {
+                Ref<OScriptLocalVariable> local_variable(memnew(OScriptLocalVariable));
+                local_variable->_function = function.ptr();
+                local_variable->_info = info;
+                local_variable->_info.name = name;
+                local_variable->_default_value = VariantUtils::make_default(info.type);
+                local_variable->_description = declaration->get("description");
+                function->_local_variables.push_back(local_variable);
+                taken_names.push_back(name);
+            }
+
+            // 2. Classify the declaration's consumers, following reroute chains to their terminal targets.
+            // An assign's "variable" input makes that assign a setter; everything else is a getter.
+            Vector<int> assign_ids;
+            Vector<Ref<OScriptNodeReroute>> reroutes;
+            struct Link {
+                int from_node;
+                int from_port;
+                int to_node;
+                int to_port;
+            };
+            Vector<Link> assign_links;
+
+            Vector<Ref<OScriptNodePin>> pending;
+            if (output.is_valid()) {
+                pending.push_back(output);
+            }
+            while (!pending.is_empty()) {
+                const Ref<OScriptNodePin> source = pending[pending.size() - 1];
+                pending.remove_at(pending.size() - 1);
+
+                for (const Ref<OScriptNodePin>& target : source->get_connections()) {
+                    const Ref<OScriptNode> target_node = target->get_owning_node();
+                    if (!target_node.is_valid()) {
+                        continue;
+                    }
+
+                    if (const Ref<OScriptNodeAssignLocalVariableLegacy> assign = target_node; assign.is_valid()) {
+                        if (target->get_pin_name() == StringName("variable")) {
+                            assign_ids.push_back(assign->get_id());
+                            assign_links.push_back({
+                                source->get_owning_node()->get_id(),
+                                source->get_pin_index(),
+                                assign->get_id(),
+                                target->get_pin_index() });
+                            continue;
+                        }
+                    } else if (const Ref<OScriptNodeReroute> reroute = target_node; reroute.is_valid()) {
+                        reroutes.push_back(reroute);
+                        const Ref<OScriptNodePin> reroute_output = reroute->find_pin(0, PD_Output);
+                        if (reroute_output.is_valid()) {
+                            pending.push_back(reroute_output);
+                        }
+                    }
+                }
+            }
+
+            // The setter no longer needs its variable link; reroutes that only served setters go too
+            for (const Link& link : assign_links) {
+                graph->unlink(link.from_node, link.from_port, link.to_node, link.to_port);
+            }
+            for (int i = reroutes.size() - 1; i >= 0; i--) {
+                const Ref<OScriptNodePin> reroute_output = reroutes[i]->find_pin(0, PD_Output);
+                if (reroute_output.is_valid() && !reroute_output->has_any_connections()) {
+                    remove_node(reroutes[i]->get_id());
+                }
+            }
+
+            // 3. Convert each assign into a Set node with the same id
+            for (int assign_id : assign_ids) {
+                if (converted_assigns.has(assign_id)) {
+                    continue;
+                }
+                converted_assigns.insert(assign_id);
+
+                const Ref<OScriptNode> assign = get_node(assign_id);
+                if (!assign.is_valid()) {
+                    continue;
+                }
+
+                Vector<Endpoint> exec_sources;
+                Vector<Endpoint> value_sources;
+                Vector<Endpoint> exec_targets;
+                Variant value_default;
+
+                const Ref<OScriptNodePin> exec_in = assign->find_pin("ExecIn", PD_Input);
+                const Ref<OScriptNodePin> value_in = assign->find_pin("value", PD_Input);
+                const Ref<OScriptNodePin> exec_out = assign->find_pin("ExecOut", PD_Output);
+                if (exec_in.is_valid()) {
+                    for (const Ref<OScriptNodePin>& source : exec_in->get_connections()) {
+                        exec_sources.push_back({ source->get_owning_node()->get_id(), source->get_pin_index() });
+                    }
+                }
+                if (value_in.is_valid()) {
+                    for (const Ref<OScriptNodePin>& source : value_in->get_connections()) {
+                        value_sources.push_back({ source->get_owning_node()->get_id(), source->get_pin_index() });
+                    }
+                    value_default = value_in->get_default_value();
+                }
+                if (exec_out.is_valid()) {
+                    for (const Ref<OScriptNodePin>& target : exec_out->get_connections()) {
+                        exec_targets.push_back({ target->get_owning_node()->get_id(), target->get_pin_index() });
+                    }
+                }
+
+                OScriptNodeInitContext context;
+                context.variable_name = name;
+                context.function_name = function->get_function_name();
+
+                const Ref<OScriptNode> setter = _replace_node(graph, assign, OScriptNodeLocalVariableSet::get_class_static(), context);
+                if (!setter.is_valid()) {
+                    continue;
+                }
+
+                for (const Endpoint& source : exec_sources) {
+                    graph->link(source.node_id, source.port, assign_id, 0);
+                }
+                for (const Endpoint& source : value_sources) {
+                    graph->link(source.node_id, source.port, assign_id, 1);
+                }
+                for (const Endpoint& target : exec_targets) {
+                    graph->link(assign_id, 0, target.node_id, target.port);
+                }
+
+                if (value_sources.is_empty() && value_default.get_type() != Variant::NIL) {
+                    const Ref<OScriptNodePin> setter_value = setter->find_pin(1, PD_Input);
+                    if (setter_value.is_valid()) {
+                        setter_value->set_default_value(VariantUtils::convert(value_default, setter_value->get_type()));
+                    }
+                }
+            }
+
+            // 4. The declaration becomes a Get node when readers remain, otherwise it is removed
+            Vector<Endpoint> getter_targets;
+            if (output.is_valid()) {
+                for (const Ref<OScriptNodePin>& target : output->get_connections()) {
+                    getter_targets.push_back({ target->get_owning_node()->get_id(), target->get_pin_index() });
+                }
+            }
+
+            if (getter_targets.is_empty()) {
+                remove_node(declaration_id);
+                continue;
+            }
+
+            OScriptNodeInitContext context;
+            context.variable_name = name;
+            context.function_name = function->get_function_name();
+
+            const Ref<OScriptNode> getter = _replace_node(graph, declaration, OScriptNodeLocalVariableGet::get_class_static(), context);
+            if (!getter.is_valid()) {
+                continue;
+            }
+
+            for (const Endpoint& target : getter_targets) {
+                graph->link(declaration_id, 0, target.node_id, target.port);
+            }
+        }
+
+        // 5. An assign that was never fed by a declaration assigned to nothing; splice it out of the exec chain
+        for (const Ref<OScriptNodeAssignLocalVariableLegacy>& assign : assigns) {
+            const int assign_id = assign->get_id();
+            if (converted_assigns.has(assign_id) || !_nodes.has(assign_id)) {
+                continue;
+            }
+
+            const Ref<OScriptNodePin> variable_in = assign->find_pin("variable", PD_Input);
+            if (variable_in.is_valid() && variable_in->has_any_connections()) {
+                // Assigns to something other than a declaration node; the legacy handler still compiles it
+                continue;
+            }
+
+            Vector<Endpoint> exec_sources;
+            Vector<Endpoint> exec_targets;
+            const Ref<OScriptNodePin> exec_in = assign->find_pin("ExecIn", PD_Input);
+            const Ref<OScriptNodePin> exec_out = assign->find_pin("ExecOut", PD_Output);
+            if (exec_in.is_valid()) {
+                for (const Ref<OScriptNodePin>& source : exec_in->get_connections()) {
+                    exec_sources.push_back({ source->get_owning_node()->get_id(), source->get_pin_index() });
+                }
+            }
+            if (exec_out.is_valid()) {
+                for (const Ref<OScriptNodePin>& target : exec_out->get_connections()) {
+                    exec_targets.push_back({ target->get_owning_node()->get_id(), target->get_pin_index() });
+                }
+            }
+
+            remove_node(assign_id);
+
+            for (const Endpoint& source : exec_sources) {
+                for (const Endpoint& target : exec_targets) {
+                    graph->link(source.node_id, source.port, target.node_id, target.port);
+                }
+            }
+
+            WARN_PRINT(vformat(
+                "Script '%s': Function '%s' had an assign node %d with no local variable; it was removed and the "
+                "execution flow reconnected.%s",
+                path, function->get_function_name(), assign_id, hint));
+        }
+    }
+
+    if (converted_graphs > 0 && !hint.is_empty()) {
+        WARN_PRINT(vformat("Script '%s': Converted local variables in %d function(s) to function declarations.%s", path, converted_graphs, hint));
+    }
+}
+
+Ref<OScriptNode> Orchestration::_replace_node(const Ref<OScriptGraph>& p_graph, const Ref<OScriptNode>& p_node, const StringName& p_class, const OScriptNodeInitContext& p_context) {
+    ERR_FAIL_COND_V(!p_graph.is_valid() || !p_node.is_valid(), nullptr);
+
+    const int node_id = p_node->get_id();
+    const Vector2 position = p_node->get_position();
+    const Vector2 size = p_node->get_size();
+
+    remove_node(node_id);
+
+    Ref<OScriptNode> replacement = OScriptNodeFactory::create_node_from_name(p_class, this);
+    ERR_FAIL_COND_V_MSG(!replacement.is_valid(), nullptr, "Failed to create replacement node of class: " + p_class);
+
+    replacement->set_id(node_id);
+    p_graph->_initialize_node(replacement, p_context, position);
+    replacement->set_size(size);
+
+    return replacement;
 }
 
 void Orchestration::_connect_nodes(int p_source_id, int p_source_port, int p_target_id, int p_target_port) {
@@ -283,10 +701,12 @@ void Orchestration::_update_all_self_nodes() {
 }
 
 String Orchestration::get_orchestration_path() const {
-    if (_self) {
+    // The outer resource has no path until loading completes, so fall back to the path recorded by the
+    // parser for messages emitted during post_initialize, and for orchestrations parsed without a script.
+    if (_self && !_self->get_path().is_empty()) {
         return _self->get_path();
     }
-    return {};
+    return _script_path;
 }
 
 StringName Orchestration::get_instance_class_type() const {
@@ -457,6 +877,8 @@ void Orchestration::post_initialize() {
         G.value->post_initialize();
     }
 
+    _fix_duplicate_event_nodes();
+
     // Sanitize attached nodes
     // In 2.5.0 deleting nodes while attached did not clean-up attachments
     for (const Ref<OScriptNodeComment>& C : comments) {
@@ -487,6 +909,11 @@ void Orchestration::post_initialize() {
         // Upgrade graphs (e.g., knots converted to reroute node migration at v4)
         for (const KeyValue<StringName, Ref<OScriptGraph>>& G : _graphs) {
             G.value->_upgrade(_version, OrchestrationFormat::FORMAT_VERSION);
+        }
+
+        // Version 5: local variables move from graph nodes to function declarations
+        if (_version < OrchestrationFormat::FORMAT_VERSION_LOCAL_VARIABLES) {
+            _upgrade_local_variables();
         }
 
         _version = OrchestrationFormat::FORMAT_VERSION;
@@ -600,7 +1027,7 @@ Vector<Ref<OScriptNodePin>> Orchestration::get_connections(const OScriptNodePin*
     for (uint32_t endpoint : *others) {
         const Ref<OScriptNode> other = get_node(ConnectionCache::node_from_key(endpoint));
         if (other.is_valid()) {
-            const Ref<OScriptNodePin> other_pin = other->find_pin(ConnectionCache::pin_index_from_key(endpoint), other_dir);
+            const Ref<OScriptNodePin> other_pin = other->find_slot_pin(ConnectionCache::pin_index_from_key(endpoint), other_dir);
             if (other_pin.is_valid()) {
                 results.push_back(other_pin);
             }
@@ -696,7 +1123,7 @@ Ref<OScriptNodePin> Orchestration::get_single_connection(const OScriptNodePin* p
     for (uint32_t endpoint : *others) {
         const Ref<OScriptNode> other = get_node(ConnectionCache::node_from_key(endpoint));
         if (other.is_valid()) {
-            const Ref<OScriptNodePin> other_pin = other->find_pin(ConnectionCache::pin_index_from_key(endpoint), other_dir);
+            const Ref<OScriptNodePin> other_pin = other->find_slot_pin(ConnectionCache::pin_index_from_key(endpoint), other_dir);
             if (other_pin.is_valid()) {
                 // More than one valid endpoint: caller semantics require an invalid result.
                 if (++valid > 1) {
@@ -908,158 +1335,131 @@ Ref<OScriptFunction> Orchestration::duplicate_function(const StringName& p_name,
     ERR_FAIL_COND_V_MSG(_has_instances(), nullptr, "Cannot duplicate functions, instances exist.");
     ERR_FAIL_COND_V_MSG(!has_function(p_name), nullptr, "No function exists with the name: " + p_name);
 
-    Ref<OScriptGraph> old_graph = find_graph(p_name);
-    Ref<OScriptFunction> old_function = find_function(p_name);
+    // A duplicate is an export re-imported under a unique name, so the copy shares the clipboard's
+    // invariants: id remap, connections, comment attachments, and promotable operator pin types.
+    const Dictionary data = export_function(p_name);
+    const String new_name = NameUtils::create_unique_name(p_name, get_function_names());
 
-    // make a unique name for the new function
-    String new_name = NameUtils::create_unique_name(p_name, get_function_names());
-
-    // make a graph
-    Ref<OScriptGraph> new_graph = create_graph(new_name, OScriptGraph::GF_FUNCTION | OScriptGraph::GF_DEFAULT);
-
-    // duplicate each node, make a lookup table that maps old node IDs to new node IDs
-    HashMap<int,int> node_id_map;
-
-    // new entry and result nodes (only needed later if we don't include code)
-    Ref<OScriptNodeFunctionEntry> new_entry;
-    Ref<OScriptNodeFunctionResult> new_result;
-
-    // Block signals for performance reasons
-    old_graph->set_block_signals(true);
-    new_graph->set_block_signals(true);
-
-    bool failed = false;
-    for (const Ref<OScriptNode>& old_node : old_graph->get_nodes()) {
-        // Short-cut exit
-        if (new_entry.is_valid() && new_result.is_valid() && !p_include_code) {
-            break;
-        }
-
-        if (!new_entry.is_valid()) {
-            Ref<OScriptNodeFunctionEntry> old_entry = old_node;
-            if (old_entry.is_valid()) {
-                const Ref<OScriptNodeFunctionEntry> entry = old_graph->duplicate_node(old_node->get_id(), {}, true);
-                if (!entry.is_valid()) {
-                    ERR_PRINT("Failed to duplicate entry node " + itos(old_node->get_id()));
-                    failed = true;
-                    break;
-                }
-                node_id_map[old_node->get_id()] = entry->get_id();
-                old_graph->remove_node(entry);
-                new_graph->add_node(entry);
-                new_entry = entry;
-                continue;
-            }
-        }
-
-        if (!new_result.is_valid()) {
-            Ref<OScriptNodeFunctionResult> old_result = old_node;
-            if (old_result.is_valid()) {
-                const Ref<OScriptNodeFunctionResult> result = old_graph->duplicate_node(old_node->get_id(), {}, true);
-                if (!result.is_valid()) {
-                    ERR_PRINT("Failed to duplicate result node " + itos(old_node->get_id()));
-                    failed = true;
-                    break;
-                }
-                node_id_map[old_node->get_id()] = result->get_id();
-                old_graph->remove_node(result);
-                new_graph->add_node(result);
-                new_result = result;
-                continue;
-            }
-        }
-
-        if (p_include_code) {
-            const Ref<OScriptNode> new_node = old_graph->duplicate_node(old_node->get_id(), {}, true);
-            if (!new_node.is_valid()) {
-                ERR_PRINT("Failed to duplicate node " + itos(old_node->get_id()));
-                failed = true;
-                break;
-            }
-            node_id_map[old_node->get_id()] = new_node->get_id();
-            old_graph->move_node_to(new_node, new_graph);
-        }
-    }
-
-    // Re-enable signals
-    old_graph->set_block_signals(false);
-    new_graph->set_block_signals(false);
-
-    if (failed) {
-        remove_graph(new_graph->get_graph_name());
+    const Ref<OScriptFunction> function = import_function(data, new_name);
+    if (!function.is_valid()) {
         return nullptr;
     }
 
-    MethodInfo method = old_function->get_method_info();
-    method.name = new_name;
+    if (p_include_code && data.has("graph")) {
+        if (!import_function_body(new_name, data["graph"])) {
+            remove_function(new_name);
+            return nullptr;
+        }
+    }
 
-    Ref<OScriptFunction> new_function = create_function(method, new_entry->get_id(), old_function->is_user_defined());
-    if (!new_function.is_valid()) {
-        remove_graph(new_graph->get_graph_name());
+    return function;
+}
+
+Dictionary Orchestration::export_function(const StringName& p_name) const {
+    const Ref<OScriptFunction> function = find_function(p_name);
+    ERR_FAIL_COND_V_MSG(!function.is_valid(), Dictionary(), "No function exists with the name: " + p_name);
+
+    Dictionary data = ResourceUtils::get_storage_properties(function);
+
+    const Ref<OScriptGraph> graph = find_graph(p_name);
+    if (graph.is_valid()) {
+        Vector<int> node_ids;
+        for (const Ref<OScriptNode>& node : graph->get_nodes()) {
+            node_ids.push_back(node->get_id());
+        }
+        data["graph"] = graph->export_nodes(node_ids);
+    }
+
+    return data;
+}
+
+Ref<OScriptFunction> Orchestration::import_function(const Dictionary& p_data, const StringName& p_name) {
+    ERR_FAIL_COND_V_MSG(_has_instances(), nullptr, "Cannot import functions, instances exist.");
+
+    MethodInfo method = DictionaryUtils::to_method(ResourceUtils::get_storage_property(p_data, OScriptFunction::get_class_static(), "method"));
+    method.name = p_name;
+
+    const bool user_defined = ResourceUtils::get_storage_property(p_data, OScriptFunction::get_class_static(), "user_defined");
+
+    const Ref<OScriptFunction> function = create_function(method, user_defined);
+    if (!function.is_valid()) {
         return nullptr;
     }
 
-    // The duplicated terminators carry the source function's guid, as that is stored state that is
-    // copied verbatim. They must be rebound onto the new function, otherwise the duplicate resolves
-    // back to the source function when the orchestration is reloaded.
-    new_entry->set_function(new_function);
-    if (new_result.is_valid()) {
-        new_result->set_function(new_function);
-    }
+    // The identity properties belong to the exporting orchestration or were consumed above
+    ResourceUtils::apply_storage_properties(function, p_data, { "guid", "id", "method", "user_defined", "graph" });
 
-    old_graph->emit_changed();
-    new_graph->emit_changed();
+    return function;
+}
 
-    // now restore connections
-    if (p_include_code) {
-        // if we include code, we need to restore all connections
-        for (const OScriptConnection& old_connection : old_graph->get_connections()) {
-            int source_id = node_id_map[static_cast<int>(old_connection.from_node)];
-            int target_id = node_id_map[static_cast<int>(old_connection.to_node)];
-            int source_port = old_connection.from_port;
-            int target_port = old_connection.to_port;
-            new_graph->link(source_id, source_port, target_id, target_port);
-        }
-    }
-    else
-    {
-        // otherwise we just connect the entry node to the result node (if we had a result node)
-        if (new_entry.is_valid() && new_result.is_valid()) {
-            // get first the output pin of the entry node that is an execution pin
-            Ref<OScriptNodePin> entry_execution_pin;
-            for (const Ref<OScriptNodePin>& pin : new_entry->find_pins(PD_Output)) {
-                if (pin->is_execution()) {
-                    entry_execution_pin = pin;
-                    break;
-                }
-            }
-            Ref<OScriptNodePin> result_execution_pin;
-            // get the fist input pin of the result node that is an execution pin
-            for (const Ref<OScriptNodePin>& pin : new_result->find_pins(PD_Input)) {
-                if (pin->is_execution()) {
-                    result_execution_pin = pin;
-                    break;
-                }
-            }
+bool Orchestration::import_function_body(const StringName& p_name, const Dictionary& p_graph_data) {
+    ERR_FAIL_COND_V_MSG(_has_instances(), false, "Cannot import function bodies, instances exist.");
 
+    const Ref<OScriptFunction> function = find_function(p_name);
+    ERR_FAIL_COND_V_MSG(!function.is_valid(), false, "No function exists with the name: " + p_name);
 
-            // connect the entry node to the result node
-            if (entry_execution_pin.is_valid() && result_execution_pin.is_valid()) {
-                // link the entry execution pin to the result execution pin
-                new_graph->link(
-                    new_entry->get_id(),
-                    entry_execution_pin->get_pin_index(),
-                    new_result->get_id(),
-                    result_execution_pin->get_pin_index());
-            }
+    const Ref<OScriptGraph> graph = find_graph(p_name);
+    ERR_FAIL_COND_V_MSG(!graph.is_valid(), false, "No function graph exists with the name: " + p_name);
 
-            // and move the result node close to the entry node
-            // this doesn't work too well on HDPI displays, but it is better than nothing
-            new_result->set_position(new_entry->get_position() + Vector2(250, 0));
+    const Ref<OScriptNode> entry = function->get_owning_node();
+    ERR_FAIL_COND_V_MSG(!entry.is_valid(), false, "The function has no entry node: " + p_name);
+
+    // Creating the function produced the entry node and, for a function with a return value, one result
+    // node linked to it. The body carries its own result nodes, any number of them, which are imported as
+    // ordinary nodes below.
+    //
+    // Only the generated node is surplus, and it is removed after the body is in place: removing the last
+    // result node of a function clears its return value, see OScriptNodeFunctionResult::pre_remove. The
+    // entry node is kept and seeded so the body's connections land on it.
+    Vector<int> generated_results;
+    for (const Ref<OScriptNode>& node : graph->get_nodes()) {
+        const Ref<OScriptNodeFunctionResult> result = node;
+        if (result.is_valid()) {
+            generated_results.push_back(result->get_id());
         }
     }
 
-    return new_function;
+    // The body is worked on as a deep copy; terminators must carry this function's guid, not the source's
+    const Dictionary data = p_graph_data.duplicate(true);
+    const String guid = function->get_guid().to_string();
+
+    HashMap<uint64_t, uint64_t> remap;
+    const Array entries = data.get("nodes", Array());
+    for (int i = 0; i < entries.size(); i++) {
+        const Dictionary node_entry = entries[i];
+        const String class_name = node_entry.get("class", String());
+        Dictionary properties = node_entry.get("properties", Dictionary());
+
+        if (ClassDB::is_parent_class(class_name, OScriptNodeFunctionEntry::get_class_static())) {
+            const int exported_id = node_entry.get("id", -1);
+            remap[exported_id] = entry->get_id();
+
+            // Keep the exported layout for the seeded node
+            entry->set_position(properties.get("position", entry->get_position()));
+            entry->set_size(properties.get("size", entry->get_size()));
+        } else if (ClassDB::is_parent_class(class_name, OScriptNodeFunctionTerminator::get_class_static())) {
+            properties["function_id"] = guid;
+        }
+    }
+
+    graph->import_nodes(data, Vector2(), remap);
+
+    // A body may legitimately carry no result node, in which case the removal below would clear the
+    // return the declaration asked for, so it is captured here and restored if that happens.
+    const bool returns_value = function->has_return_type();
+    const PropertyInfo return_value = function->get_method_info().return_val;
+
+    for (const int node_id : generated_results) {
+        remove_node(node_id);
+    }
+
+    if (returns_value && !function->has_return_type()) {
+        function->set_return(return_value);
+    }
+
+    graph->emit_changed();
+
+    return true;
 }
 
 void Orchestration::remove_function(const StringName& p_name) {
@@ -1348,6 +1748,125 @@ Ref<OScriptVariable> Orchestration::promote_to_variable(const Ref<OScriptNodePin
     return variable;
 }
 
+Ref<OScriptVariable> Orchestration::promote_local_variable(const Ref<OScriptFunction>& p_function, const StringName& p_name, bool p_avoid_shadowing) {
+    ERR_FAIL_COND_V_MSG(_has_instances(), nullptr, "Cannot promote local variables, instances exist.");
+    ERR_FAIL_COND_V_MSG(!p_function.is_valid(), nullptr, "Cannot promote local variable, function is invalid.");
+
+    const Ref<OScriptLocalVariable> local_variable = p_function->find_local_variable(p_name);
+    ERR_FAIL_COND_V_MSG(!local_variable.is_valid(), nullptr, vformat("No local variable exists with the name '%s' in function '%s'.", p_name, p_function->get_function_name()));
+
+    const Ref<OScriptGraph> graph = p_function->get_function_graph();
+    ERR_FAIL_COND_V_MSG(!graph.is_valid(), nullptr, "Cannot promote local variable, the function has no graph.");
+
+    // Script variables share a namespace with functions, signals and graphs
+    PackedStringArray used = get_variable_names();
+    used.append_array(get_function_names());
+    used.append_array(get_custom_signal_names());
+    used.append_array(get_graph_names());
+
+    // Other functions' locals and arguments would shadow the variable; avoiding them is the caller's choice
+    if (p_avoid_shadowing) {
+        for (const KeyValue<StringName, Ref<OScriptFunction>>& E : _functions) {
+            if (E.value == p_function) {
+                continue;
+            }
+            used.append_array(E.value->get_local_variable_names());
+            for (const PropertyInfo& argument : E.value->get_method_info().arguments) {
+                used.push_back(argument.name);
+            }
+        }
+    }
+
+    const String variable_name = NameUtils::create_unique_name(p_name, used);
+
+    Ref<OScriptVariable> variable = create_variable(variable_name, local_variable->get_info().type);
+    ERR_FAIL_COND_V_MSG(!variable.is_valid(), nullptr, "Failed to create variable: " + variable_name);
+
+    variable->set_info(local_variable->get_info());
+    variable->set_default_value(local_variable->get_default_value());
+    variable->set_description(local_variable->get_description());
+
+    // Every accessor of the local becomes the matching script variable accessor, same id and connections
+    Vector<Ref<OScriptNodeLocalVariable>> accessors;
+    for (const Ref<OScriptNode>& node : graph->get_nodes()) {
+        const Ref<OScriptNodeLocalVariable> accessor = node;
+        if (accessor.is_valid() && accessor->get_variable_name() == p_name) {
+            accessors.push_back(accessor);
+        }
+    }
+
+    for (const Ref<OScriptNodeLocalVariable>& accessor : accessors) {
+        const int node_id = accessor->get_id();
+        const bool setter = accessor->is_type<OScriptNodeLocalVariableSet>();
+
+        // Connections are recorded by id and port, and both accessor pairs share the same pin layout
+        Vector<OScriptConnection> connections;
+        for (const OScriptConnection& connection : _connection_cache.all()) {
+            if (connection.is_linked_to(node_id)) {
+                connections.push_back(connection);
+            }
+        }
+
+        Variant value_default;
+        if (setter) {
+            const Ref<OScriptNodePin> value_pin = accessor->find_pin(1, PD_Input);
+            if (value_pin.is_valid() && !value_pin->has_any_connections()) {
+                value_default = value_pin->get_default_value();
+            }
+        }
+
+        OScriptNodeInitContext context;
+        context.variable_name = variable_name;
+
+        const StringName node_class = setter ? OScriptNodeVariableSet::get_class_static() : OScriptNodeVariableGet::get_class_static();
+        const Ref<OScriptNode> replacement = _replace_node(graph, accessor, node_class, context);
+        if (!replacement.is_valid()) {
+            continue;
+        }
+
+        for (const OScriptConnection& connection : connections) {
+            graph->link(connection.from_node, connection.from_port, connection.to_node, connection.to_port);
+        }
+
+        if (setter && value_default.get_type() != Variant::NIL) {
+            const Ref<OScriptNodePin> value_pin = replacement->find_pin(1, PD_Input);
+            if (value_pin.is_valid()) {
+                value_pin->set_default_value(VariantUtils::convert(value_default, value_pin->get_type()));
+            }
+        }
+    }
+
+    // No accessor references the local anymore, so removal drops only the declaration
+    p_function->remove_local_variable(p_name);
+
+    set_edited(true);
+
+    return variable;
+}
+
+PackedStringArray Orchestration::get_functions_shadowing(const StringName& p_name, const Ref<OScriptFunction>& p_exclude) const {
+    PackedStringArray names;
+    for (const KeyValue<StringName, Ref<OScriptFunction>>& E : _functions) {
+        const Ref<OScriptFunction>& function = E.value;
+        if (!function.is_valid() || function == p_exclude) {
+            continue;
+        }
+
+        bool shadows = function->has_local_variable(p_name);
+        for (const PropertyInfo& argument : function->get_method_info().arguments) {
+            if (argument.name == p_name) {
+                shadows = true;
+            }
+        }
+
+        if (shadows) {
+            names.push_back(function->get_function_name());
+        }
+    }
+    names.sort();
+    return names;
+}
+
 bool Orchestration::has_custom_signal(const StringName& p_name) const {
     return _signals.has(p_name);
 }
@@ -1439,17 +1958,21 @@ PackedStringArray Orchestration::get_custom_signal_names() const {
 
 void Orchestration::copy_state(const Ref<Orchestration>& p_other) {
     set_block_signals(true);
+
     set_global_name(p_other->get_global_name());
     set_icon_path(p_other->get_icon_path());
     set_description(p_other->get_description());
     set_brief_description(p_other->get_brief_description());
     set_base_type(p_other->get_base_type());
+
+    _script_path = p_other->_script_path;
     _set_nodes_internal(p_other->_get_nodes_internal());
     _set_connections_internal(p_other->_get_connections_internal());
     _set_graphs_internal(p_other->_get_graphs_internal());
     _set_functions_internal(p_other->_get_functions_internal());
     _set_variables_internal(p_other->_get_variables_internal());
     _set_signals_internal(p_other->_get_signals_internal());
+
     set_block_signals(false);
 
     // During the above setters, the model is being replaced with the on-disk snapshot.

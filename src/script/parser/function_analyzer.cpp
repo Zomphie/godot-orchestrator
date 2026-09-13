@@ -183,7 +183,7 @@ const Vector<Ref<OScriptNode>>& OScriptFunctionAnalyzer::Context::get_control_fl
 
     // Build directly into the cache slot to avoid an extra copy.
     Vector<Ref<OScriptNode>>& successors = control_flow_successors[id];
-    for (const Ref<OScriptNodePin>& output : p_node->find_pins(PD_Output)) {
+    for (const Ref<OScriptNodePin>& output : p_node->get_slot_pins(PD_Output)) {
         if (output.is_valid() && output->is_execution() && output->has_any_connections()) {
             const Ref<OScriptNodePin> target = output->get_resolved_connection();
             if (target.is_valid()) {
@@ -302,6 +302,8 @@ void OScriptFunctionAnalyzer::_register_incoming_nets(Context& p_context, const 
             if (const Ref<OScriptNodeFunctionEntry>& entry = source_node; entry.is_valid()) {
                 p_context.info.net_variable_allocation[key] = source_pin->get_pin_name();
             } else if (const Ref<OScriptNodeLocalVariable>& local_var = source_node; local_var.is_valid()) {
+                p_context.info.net_variable_allocation[key] = local_var->get_variable_name();
+            } else if (const Ref<OScriptNodeLocalVariableLegacy>& local_var = source_node; local_var.is_valid()) {
                 String variable_name = local_var->get_variable_name();
                 if (variable_name.is_empty()) {
                     const uint64_t net_id = p_context.get_next_net_id();
@@ -338,7 +340,7 @@ void OScriptFunctionAnalyzer::_register_nets(Context& p_context) {
 
         visited.insert(node_id);
 
-        for (const Ref<OScriptNodePin>& input : current->find_pins(PD_Input)) {
+        for (const Ref<OScriptNodePin>& input : current->get_slot_pins(PD_Input)) {
             if (input.is_valid() && !input->is_execution()) {
                 _register_incoming_nets(p_context, input, node_id);
 
@@ -525,7 +527,7 @@ bool OScriptFunctionAnalyzer::_post_dominates(Context& p_context, NodeId p_diver
 
         int exec_outputs = 0;
         int connected_outputs = 0;
-        for (const Ref<OScriptNodePin>& output : node->find_pins(PD_Output)) {
+        for (const Ref<OScriptNodePin>& output : node->get_slot_pins(PD_Output)) {
             if (output.is_valid() && output->is_execution()) {
                 exec_outputs++;
                 if (output->has_any_connections()) {
@@ -570,7 +572,7 @@ void OScriptFunctionAnalyzer::_find_merge_point_by_pin(Context& p_context, NodeI
     // Find the first connected execution input pin on the merge node: the convergence pin.
     // For loop nodes with a break pin, skip the break pin unless the divergence originates
     // from within the loop body (where breaking out is valid).
-    for (const Ref<OScriptNodePin>& input : merge_node->find_pins(PD_Input)) {
+    for (const Ref<OScriptNodePin>& input : merge_node->get_slot_pins(PD_Input)) {
         if (input.is_valid() && input->is_execution() && input->has_any_connections()
             && (divergence_is_in_loop_body || !merge_node->is_loop_break_pin(input))) {
             p_context.info.divergence_to_merge_pins[p_divergence_node_id] = { merge_node_id, input->get_pin_index() };
@@ -579,7 +581,7 @@ void OScriptFunctionAnalyzer::_find_merge_point_by_pin(Context& p_context, NodeI
     }
 
     // Fallback: take the first execution pin (no connections found above).
-    for (const Ref<OScriptNodePin>& input : merge_node->find_pins(PD_Input)) {
+    for (const Ref<OScriptNodePin>& input : merge_node->get_slot_pins(PD_Input)) {
         if (input.is_valid() && input->is_execution()
             && (divergence_is_in_loop_body || !merge_node->is_loop_break_pin(input))) {
             p_context.info.divergence_to_merge_pins[p_divergence_node_id] = { merge_node_id, input->get_pin_index() };
@@ -631,7 +633,7 @@ OScriptNodePinSet OScriptFunctionAnalyzer::_get_all_reachable_pins(Context& p_co
             return;
         }
 
-        for (const Ref<OScriptNodePin>& output_pin : node->find_pins(PD_Output)) {
+        for (const Ref<OScriptNodePin>& output_pin : node->get_slot_pins(PD_Output)) {
             if (output_pin->is_execution() && output_pin->has_any_connections()) {
                 const Ref<OScriptNodePin> target_pin = output_pin->get_resolved_connection();
                 if (target_pin.is_valid()) {
@@ -646,7 +648,7 @@ OScriptNodePinSet OScriptFunctionAnalyzer::_get_all_reachable_pins(Context& p_co
 }
 
 void OScriptFunctionAnalyzer::_collect_data_dependencies(const Ref<OScriptNode>& p_node, OScriptNodePinSet& p_dependencies, DataDependencyContext& p_context) {
-    for (const Ref<OScriptNodePin>& input : p_node->find_pins(PD_Input)) {
+    for (const Ref<OScriptNodePin>& input : p_node->get_slot_pins(PD_Input)) {
         if (input.is_valid() && !input->is_execution() && input->has_any_connections()) {
             const Ref<OScriptNodePin> source_pin = input->get_resolved_connection();
             if (!source_pin.is_valid()) {
@@ -670,7 +672,7 @@ void OScriptFunctionAnalyzer::_collect_data_dependencies(const Ref<OScriptNode>&
 }
 
 void OScriptFunctionAnalyzer::_collect_data_dependencies(const Ref<OScriptNode>& p_node, HashSet<NodeId>& p_dependencies, DataDependencyContext& p_context) {
-    for (const Ref<OScriptNodePin>& input : p_node->find_pins(PD_Input)) {
+    for (const Ref<OScriptNodePin>& input : p_node->get_slot_pins(PD_Input)) {
         if (input.is_valid() && !input->is_execution() && input->has_any_connections()) {
             const Ref<OScriptNodePin> source_pin = input->get_resolved_connection();
             if (!source_pin.is_valid()) {
@@ -731,11 +733,11 @@ void OScriptFunctionAnalyzer::_analyze_combined(Context& p_context) {
             }
         } else if (const Ref<OScriptNodeBranch>& branch = current; branch.is_valid()) {
             info.is_branch_node[node_id] = true;
-        } else if (const Ref<OScriptNodeLocalVariable>& local_variable = current; local_variable.is_valid()) {
+        } else if (const Ref<OScriptNodeLocalVariableLegacy>& local_variable = current; local_variable.is_valid()) {
             info.local_variables[node_id] = local_variable->get_variable_name();
         }
 
-        for (const Ref<OScriptNodePin>& input : current->find_pins(PD_Input)) {
+        for (const Ref<OScriptNodePin>& input : current->get_slot_pins(PD_Input)) {
             if (input.is_valid() && input->has_any_connections()) {
                 for (const Ref<OScriptNodePin>& source : input->get_resolved_connections()) {
                     const Ref<OScriptNode> owner = source->get_owning_node();

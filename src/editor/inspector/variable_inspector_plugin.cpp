@@ -16,56 +16,96 @@
 //
 #include "editor/inspector/variable_inspector_plugin.h"
 
-#include "common/macros.h"
+#include "common/scene_utils.h"
+#include "editor/inspector/properties/editor_property_annotations.h"
 #include "editor/inspector/properties/editor_property_type.h"
+#include "orchestration/local_variable.h"
+#include "orchestration/orchestration.h"
 #include "orchestration/variable.h"
 
 #include <godot_cpp/classes/editor_interface.hpp>
 
+/// Locks a dictionary variable's key/value types once its default value holds entries.
+/// Script and local variables both expose their default through the "default_value" property.
 class OScriptVariableConstraintProvider : public OrchestratorEditorTypeConstraintProvider {
-    Ref<OScriptVariable> _variable;
+    Ref<Resource> _variable;
 
 public:
-    bool is_key_locked() const override {
+    bool is_type_locked() const override {
         if (_variable.is_valid()) {
-            const Variant value = _variable->get_default_value();
-            if (value.get_type() == Variant::DICTIONARY) {
-                const Dictionary& dict = value;
-                return !dict.is_empty();
+            const Variant value = _variable->get("default_value");
+            switch (value.get_type()) {
+                case Variant::ARRAY: {
+                    const Array& array = value;
+                    return !array.is_empty();
+                }
+                case Variant::DICTIONARY: {
+                    const Dictionary& dictionary = value;
+                    return !dictionary.is_empty();
+                }
+                default: {
+                    break;
+                }
             }
         }
         return false;
-    }
-
-    bool is_value_locked() const override {
-        return is_key_locked();
     }
 
     PackedStringArray get_exclusions() const override {
         return {};
     }
 
-    explicit OScriptVariableConstraintProvider(const Ref<OScriptVariable>& p_variable)
+    Object* get_constraint_source() const override {
+        return _variable.ptr();
+    }
+
+    explicit OScriptVariableConstraintProvider(const Ref<Resource>& p_variable)
         : _variable(p_variable) {}
 };
 
 bool OrchestratorEditorInspectorPluginVariable::_can_handle(Object* p_object) const {
-    return p_object && p_object->get_class() == OScriptVariable::get_class_static();
+    if (!p_object) {
+        return false;
+    }
+
+    const StringName class_name = p_object->get_class();
+    return class_name == OScriptVariable::get_class_static() || class_name == OScriptLocalVariable::get_class_static();
+}
+
+void OrchestratorEditorInspectorPluginVariable::_parse_begin(Object* p_object) {
+    const Ref<OScriptVariable> variable = cast_to<OScriptVariable>(p_object);
+    if (variable.is_null() || !variable->get_orchestration()) {
+        return;
+    }
+
+    if (Node* base_node = SceneUtils::get_scene_base_node(variable->get_orchestration()->get_self())) {
+        variable->set_meta("__base_node_relative", base_node);
+    } else if (variable->has_meta("__base_node_relative")) {
+        variable->remove_meta("__base_node_relative");
+    }
 }
 
 bool OrchestratorEditorInspectorPluginVariable::_parse_property(Object* p_object, Variant::Type p_type, const String& p_name,
     PropertyHint p_hint, const String& p_hint_string, BitField<PropertyUsageFlags> p_usage, bool p_wide) {
 
-    const Ref<OScriptVariable> variable = cast_to<OScriptVariable>(p_object);
+    const Ref<Resource> variable = cast_to<Resource>(p_object);
     if (variable.is_null()) {
         return false;
     }
 
     if (p_name.match("info")) {
+        const bool local = cast_to<OScriptLocalVariable>(p_object) != nullptr;
+
         OrchestratorEditorPropertyType* editor = memnew(OrchestratorEditorPropertyType);
         editor->setup("variable_type", true);
         editor->set_constraint_provider(std::make_unique<OScriptVariableConstraintProvider>(variable));
-        add_property_editor(p_name, editor, true, "Variable Type");
+        add_property_editor(p_name, editor, true, local ? "Local Variable Type" : "Variable Type");
+        return true;
+    }
+
+    if (p_name.match("annotations")) {
+        OrchestratorEditorPropertyAnnotations* editor = memnew(OrchestratorEditorPropertyAnnotations);
+        add_property_editor(p_name, editor, false, "Annotations");
         return true;
     }
 

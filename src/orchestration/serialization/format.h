@@ -20,5 +20,10 @@
 
 struct OrchestrationFormat {
     // Format 4: Introduction of OScriptNodeReroute nodes
-    static inline uint32_t FORMAT_VERSION = 4;
+    // Format 5: Split pins store their sub-pins nested under the parent pin's data
+    //           Annotations on variables and functions; the "exported" flag is derived and no longer stored;
+    //           variable initializer kind for node paths resolved at ready
+    //           Local variables become OScriptFunction declarations with Get/Set nodes
+    static inline uint32_t FORMAT_VERSION = 5;
+    static inline uint32_t FORMAT_VERSION_LOCAL_VARIABLES = 5;
 };

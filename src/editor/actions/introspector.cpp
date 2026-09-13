@@ -140,6 +140,40 @@ void OrchestratorEditorIntrospector::_register_global_class_static_methods(const
     }
 }
 
+void OrchestratorEditorIntrospector::_register_constant(const String& p_node_type, const String& p_category, const String& p_owner,
+    const String& p_constant_name, const Variant& p_value, const Dictionary& p_data, ActionSet& r_actions) {
+
+    r_actions.insert(
+        _script_node_builder(p_node_type, p_category, p_constant_name, p_data)
+        .tooltip(vformat("%s.%s = %s", p_owner, p_constant_name, p_value))
+        .keywords(_build_member_keywords(p_constant_name, p_owner))
+        .no_capitalize(true)
+        .build());
+}
+
+void OrchestratorEditorIntrospector::_register_class_constants(const String& p_class_name, ActionSet& r_actions) {
+    // Only constants the class declares itself; inherited ones are listed under their declaring class.
+    // Enum members are registered as integer constants, so this covers both.
+    const PackedStringArray constant_names = ClassDB::class_get_integer_constant_list(p_class_name, true);
+    if (constant_names.is_empty()) {
+        return;
+    }
+
+    const String category = vformat("Constants/%s", p_class_name);
+    _create_categories_from_path(r_actions, category, p_class_name);
+
+    // Singletons keep their dedicated node so the inspector offers the singleton class list.
+    const String node_type = Engine::get_singleton()->has_singleton(p_class_name)
+        ? OScriptNodeSingletonConstant::get_class_static()
+        : OScriptNodeClassConstant::get_class_static();
+
+    for (const String& constant_name : constant_names) {
+        const int64_t value = ClassDB::class_get_integer_constant(p_class_name, constant_name);
+        const Dictionary data = DictionaryUtils::of({ { "class_name", p_class_name }, { "constant", constant_name } });
+        _register_constant(node_type, category, p_class_name, constant_name, value, data, r_actions);
+    }
+}
+
 OrchestratorEditorIntrospector::ActionBuilder OrchestratorEditorIntrospector::_script_node_builder(
     const String& p_node_type, const String& p_category, const String& p_name, const Dictionary& p_data) {
 
@@ -360,19 +394,23 @@ void OrchestratorEditorIntrospector::_get_actions_for_class(const String& p_clas
         r_actions.insert(
             _script_node_builder<OScriptNodeNew>(
                 methods_category,
-                "Create New Instance",
+                vformat("Create New %s Instance", p_class_name),
                 DictionaryUtils::of({ { "class_name", p_class_name } }))
             .target_class(p_class_name)
             .tooltip(vformat("Creates a new instance of '%s'.", p_class_name))
+            .keywords(Array::make("create", "new", p_class_name))
+            .no_capitalize(true)
             .build());
 
         r_actions.insert(
             _script_node_builder<OScriptNodeFree>(
                 methods_category,
-                "Free Instance",
+                vformat("Free %s Instance", p_class_name),
                 DictionaryUtils::of({ { "class_name", p_class_name } }))
             .target_class(p_class_name)
             .tooltip(vformat("Free the memory used by the '%s' instance.", p_class_name))
+            .keywords(Array::make("free", "delete", p_class_name))
+            .no_capitalize(true)
             .build());
     }
 
@@ -681,6 +719,61 @@ void OrchestratorEditorIntrospector::generate_actions_from_script(const Ref<Scri
     }
 }
 
+void OrchestratorEditorIntrospector::generate_actions_from_function(const Ref<OScriptFunction>& p_function, ActionSet& r_actions) {
+    if (!p_function.is_valid() || !p_function->get_orchestration()) {
+        return;
+    }
+
+    const String base_type = p_function->get_orchestration()->get_base_type();
+    const Dictionary data = DictionaryUtils::of({ { "function_name", p_function->get_function_name() } });
+
+    for (const Ref<OScriptLocalVariable>& local_variable : p_function->get_local_variables()) {
+        if (!local_variable.is_valid()) {
+            continue;
+        }
+
+        const PropertyInfo& property = local_variable->get_info();
+        const String name = local_variable->get_variable_name();
+
+        String get_desc = vformat("Get the value of the local variable '%s' in function '%s'.", name, p_function->get_function_name());
+        String set_desc = vformat("Sets the value of the local variable '%s' in function '%s'.", name, p_function->get_function_name());
+        if (!local_variable->get_description().is_empty()) {
+            get_desc += "\n\n" + local_variable->get_description();
+            set_desc += "\n\n" + local_variable->get_description();
+        }
+
+        PackedStringArray keywords = _build_member_keywords(name, base_type);
+
+        r_actions.insert(
+            ActionBuilder("Local Variables", vformat("Get %s", name))
+            .type(ActionType::ACTION_LOCAL_VARIABLE_GET)
+            .graph_type(GraphType::GRAPH_FUNCTION)
+            .icon(_get_type_icon(property.type))
+            .tooltip(get_desc)
+            .keywords(keywords)
+            .target_class(base_type)
+            .selectable(true)
+            .property(property)
+            .class_name(base_type)
+            .data(data)
+            .build());
+
+        r_actions.insert(
+            ActionBuilder("Local Variables", vformat("Set %s", name))
+            .type(ActionType::ACTION_LOCAL_VARIABLE_SET)
+            .graph_type(GraphType::GRAPH_FUNCTION)
+            .icon(_get_type_icon(property.type))
+            .tooltip(set_desc)
+            .keywords(keywords)
+            .target_class(base_type)
+            .selectable(true)
+            .property(property)
+            .class_name(base_type)
+            .data(data)
+            .build());
+    }
+}
+
 void OrchestratorEditorIntrospector::generate_actions_from_script_nodes(ActionSet& r_actions) {
     // todo:
     //  we need a way to describe the pin types on nodes
@@ -698,6 +791,25 @@ void OrchestratorEditorIntrospector::generate_actions_from_script_nodes(ActionSe
     r_actions.insert(_script_node_builder<OScriptNodeTypeConstant>("Constants", "Type Constant").build());
     r_actions.insert(_script_node_builder<OScriptNodeClassConstant>("Constants", "Class Constant").build());
     r_actions.insert(_script_node_builder<OScriptNodeSingletonConstant>("Constants", "Singleton Constant").build());
+
+    // Every global enum value is searchable by name, spawning a preconfigured global constant node
+    const String global_constants_category = "@GlobalScope/Constants";
+    for (const String& constant_name : ExtensionDB::get_global_enum_value_names()) {
+        const EnumValue enum_value = ExtensionDB::get_global_enum_value(constant_name);
+        const EnumInfo enum_info = ExtensionDB::get_global_enum_by_value(constant_name);
+        const Dictionary data = DictionaryUtils::of({ { "constant", constant_name } });
+        _register_constant(OScriptNodeGlobalConstant::get_class_static(), global_constants_category,
+            vformat("@GlobalScope.%s", enum_info.name), constant_name, enum_value.value, data, r_actions);
+    }
+
+    // Math constants belong to the scripting language rather than to any Godot class
+    const String math_constants_category = "@OScript/Constants";
+    for (const String& constant_name : ExtensionDB::get_math_constant_names()) {
+        const ConstantInfo constant = ExtensionDB::get_math_constant(constant_name);
+        const Dictionary data = DictionaryUtils::of({ { "constant", constant_name } });
+        _register_constant(OScriptNodeMathConstant::get_class_static(), math_constants_category,
+            "@OScript", constant_name, constant.value, data, r_actions);
+    }
 
     // Data
     r_actions.insert(_script_node_builder<OScriptNodeArrayGet>("Types/Array/Operators", "Get at Index", array_data)
@@ -825,13 +937,6 @@ void OrchestratorEditorIntrospector::generate_actions_from_script_nodes(ActionSe
     r_actions.insert(_script_node_builder<OScriptNodePrintString>("Utilities", "Print String")
         .executions(true).inputs(Variant::STRING, Variant::BOOL, Variant::COLOR, Variant::FLOAT).build());
 
-    // Variable Assignment
-    const Dictionary local_object = DictionaryUtils::of({ { "type", Variant::OBJECT } });
-    r_actions.insert(_script_node_builder<OScriptNodeAssignLocalVariable>("Variables", "Assign Local").graph_type(GraphType::GRAPH_FUNCTION).build());
-    r_actions.insert(_script_node_builder<OScriptNodeAssignLocalVariable>("Utilities/Macros", "Assign Local").graph_type(GraphType::GRAPH_MACRO).build());
-    r_actions.insert(_script_node_builder<OScriptNodeLocalVariable>("Variables", "Local Object", local_object).graph_type(GraphType::GRAPH_FUNCTION).build());
-    r_actions.insert(_script_node_builder<OScriptNodeLocalVariable>("Utilities/Macros", "Local Object", local_object).graph_type(GraphType::GRAPH_MACRO).build());
-
     // List each engine singleton directly
     for (const String& name : Engine::get_singleton()->get_singleton_list()) {
         const Dictionary data = DictionaryUtils::of({ { "singleton_name", name } });
@@ -851,7 +956,7 @@ void OrchestratorEditorIntrospector::generate_actions_from_script_nodes(ActionSe
             continue;
         }
 
-        r_actions.insert(_script_node_builder<OScriptNodeCallBuiltinFunction>("@OScript", mi.name, language_functions[i]).build());
+        r_actions.insert(_script_node_builder<OScriptNodeCallBuiltinFunction>("@OScript/Methods", mi.name, language_functions[i]).build());
     }
 }
 
@@ -874,13 +979,17 @@ void OrchestratorEditorIntrospector::generate_actions_from_variant_types(ActionS
 
         const Dictionary type_dict = DictionaryUtils::of({ { "type", type.type } });
 
-        // Local variables for macros
-        r_actions.insert(
-            _script_node_builder<OScriptNodeLocalVariable>(
-                category,
-                vformat("Local %s Variable", type_name), type_dict)
-            .graph_type(GraphType::GRAPH_MACRO)
-            .build());
+        // Type constants, i.e. Vector2.ZERO or Color.RED, spawning a preconfigured type constant node
+        if (!type.constants.is_empty()) {
+            const String constants_category = vformat("Constants/%s", type_name);
+            _create_categories_from_path(r_actions, constants_category, type_icon);
+
+            for (const ConstantInfo& constant : type.constants) {
+                const Dictionary data = DictionaryUtils::of({ { "type", type.type }, { "constant", constant.name } });
+                _register_constant(OScriptNodeTypeConstant::get_class_static(), constants_category,
+                    type_name, constant.name, constant.value, data, r_actions);
+            }
+        }
 
         if (!type.properties.is_empty()) {
             Vector<Variant::Type> property_types;
@@ -1123,6 +1232,11 @@ void OrchestratorEditorIntrospector::generate_actions_from_autoloads(ActionSet& 
 
 void OrchestratorEditorIntrospector::generate_actions_from_native_classes(ActionSet& r_actions) {
     for (const String& class_name : ClassDB::get_class_list()) {
+        // Exclude classes that are prefixed with Orchestrator and OScript, as _get_actions_for_class does.
+        if (class_name.begins_with("Orchestrator") || class_name.begins_with("OScript")) {
+            continue;
+        }
+
         _get_actions_for_class(
             class_name,
             class_name,
@@ -1130,6 +1244,8 @@ void OrchestratorEditorIntrospector::generate_actions_from_native_classes(Action
             ClassDB::class_get_property_list(class_name, true),
             ClassDB::class_get_signal_list(class_name, true),
             r_actions);
+
+        _register_class_constants(class_name, r_actions);
     }
 }
 
@@ -1155,6 +1271,21 @@ void OrchestratorEditorIntrospector::generate_actions_from_script_global_classes
         // Also register static methods from parent type as accessible via the script type.
         const String base_type = ScriptServer::get_global_class(global_name).base_type;
         _register_static_methods(base_type, global_name, static_category_name, r_actions);
+
+        // Script-declared constants and enum values, spawning a class constant node scoped to the script class
+        const ScriptServer::GlobalClass global_class = ScriptServer::get_global_class(global_name);
+        const PackedStringArray constant_names = global_class.get_integer_constant_list();
+        if (!constant_names.is_empty()) {
+            const String constants_category = vformat("Constants/%s", global_name);
+            _create_categories_from_path(r_actions, constants_category, global_class.base_type);
+
+            for (const String& constant_name : constant_names) {
+                const int64_t value = global_class.get_integer_constant(constant_name);
+                const Dictionary data = DictionaryUtils::of({ { "class_name", global_name }, { "constant", constant_name } });
+                _register_constant(OScriptNodeClassConstant::get_class_static(), constants_category,
+                    global_name, constant_name, value, data, r_actions);
+            }
+        }
     }
 }
 

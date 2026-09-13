@@ -18,6 +18,7 @@
 
 #include "common/godot_version.h"
 #include "core/godot/object/weak_ref.h"
+#include "editor/actions/definition.h"
 #include "editor/graph/graph_clipboard.h"
 #include "editor/graph/graph_node.h"
 #include "editor/graph/graph_panel_styler.h"
@@ -180,6 +181,8 @@ protected:
     void _cut_nodes_request();
     void _duplicate_nodes_request();
     void _paste_nodes_request();
+    void _paste_conflicts_confirmed(Object* p_dialog, const Vector2& p_offset);
+    void _paste_nodes(const Vector2& p_offset, const Vector<OrchestratorEditorGraphClipboard::Resolution>& p_resolutions);
     void _begin_node_move();
     void _end_node_move();
     void _scroll_offset_changed(const Vector2& p_scroll_offset);
@@ -206,6 +209,8 @@ protected:
     void _detach_node_from_frame(const StringName& p_node_name);
     void _save_frame_attachments(OrchestratorEditorGraphFrame* p_frame);
     void _restore_frame_attachments();
+    void _restore_frame_attachments(OrchestratorEditorGraphFrame* p_frame);
+    void _restore_frame_attachments(const HashSet<uint64_t>& p_node_ids);
     void _spawn_frame();
 
 private:
@@ -221,7 +226,6 @@ private:
     void _graph_changed();
     //~ End OrchestrationGraph Signals
 
-    void _clear_copy_buffer();
     void _toggle_resizer_for_selected_nodes();
     void _resize_selected_nodes_to_content();
     void _refresh_selected_nodes();
@@ -234,10 +238,13 @@ private:
     void _create_call_to_parent_function(OrchestratorEditorGraphNode* p_node);
     void _set_node_position(OrchestratorEditorGraphNode* p_node, const Vector2& p_position);
     Vector<OrchestratorEditorGraphNode*> _get_selected_nodes_sorted(bool p_horizontal);
+    Vector<Ref<OrchestrationGraphNode>> _get_selected_model_nodes();
+    void _select_elements(const HashSet<uint64_t>& p_node_ids);
     void _align_nodes(OrchestratorEditorGraphNode* p_anchor, int p_alignment);
     void _distribute_nodes(int p_distribution);
     void _stack_nodes(OrchestratorEditorGraphNode* p_anchor, int p_stack);
     void _set_variable_node_validation(OrchestratorEditorGraphNode* p_node, bool p_validated);
+
     void _toggle_await_function(OrchestratorEditorGraphNode* p_node);
 
     void _select_connected_execution_pins(OrchestratorEditorGraphPin* p_pin);
@@ -245,7 +252,11 @@ private:
     void _change_node_pin_type(OrchestratorEditorGraphPin* p_pin, int p_type);
     bool _can_promote_pin_to_variable(OrchestratorEditorGraphPin* p_pin);
     void _promote_pin_to_variable(OrchestratorEditorGraphPin* p_pin);
+    bool _can_promote_pin_to_local_variable(OrchestratorEditorGraphPin* p_pin);
+    void _promote_pin_to_local_variable(OrchestratorEditorGraphPin* p_pin);
     void _reset_pin_to_generated_default_value(OrchestratorEditorGraphPin* p_pin);
+    void _split_node_pin(OrchestratorEditorGraphPin* p_pin);
+    void _recombine_node_pin(OrchestratorEditorGraphPin* p_pin);
     void _view_documentation(const String& p_topic);
 
     void _connect_graph_node_signals(OrchestratorEditorGraphNode* p_node);
@@ -253,6 +264,7 @@ private:
 
     OrchestratorEditorGraphPin* _resolve_pin_from_handle(const PinHandle& p_handle, bool p_input);
 
+    OrchestratorEditorActionSet _get_script_actions() const;
     void _connect_with_menu(const PinHandle& p_handle, const Vector2& p_position, bool p_input);
     void _popup_menu(const Vector2& p_position);
     void _action_menu_selection(const Ref<OrchestratorEditorActionDefinition>& p_action);
@@ -262,7 +274,8 @@ private:
     void _settings_changed();
     void _show_drag_hint(const String& p_hint_text) const;
     bool _is_delete_confirmation_enabled();
-    bool _can_duplicate_nodes(const Vector<OrchestratorEditorGraphNode*>& p_nodes, bool p_error_dialog = true);
+    bool _can_duplicate_nodes(const Vector<Ref<OrchestrationGraphNode>>& p_nodes, bool p_error_dialog = true);
+    bool _can_copy_nodes(const Vector<Ref<OrchestrationGraphNode>>& p_nodes, bool p_cut = false, bool p_error_dialog = true);
     void _set_scroll_offset_and_zoom(const Vector2& p_scroll_offset, float p_zoom = 1.f, const Callable& p_callback = Callable());
     void _schedule_restore();
     void _restore_edit_state();
@@ -291,6 +304,7 @@ private:
     void _drop_data_property(const Dictionary& p_property, const Vector2& p_at_position, const String& p_path, bool p_setter);
     void _drop_data_function(const Dictionary& p_function, const Vector2& p_at_position, bool p_as_callable);
     void _drop_data_variable(const String& p_name, const Vector2& p_at_position, bool p_validated, bool p_setter);
+    void _drop_data_local_variable(const String& p_name, const Vector2& p_at_position, bool p_setter);
 
     bool _is_in_port_hotzone(const Vector2& p_pos, const Vector2& p_mouse_pos, const Vector2i& p_port_size, bool p_left);
 
@@ -321,6 +335,7 @@ public:
     bool _is_in_output_hotzone(Object* p_in_node, int32_t p_in_port, const Vector2& p_mouse_position) override;
     //~ End GraphEdit Interface
 
+    Ref<OrchestrationGraph> get_graph() const { return _graph; }
     void set_graph(const Ref<OrchestrationGraph>& p_graph);
     void reloaded_from_file();
 
@@ -359,7 +374,7 @@ public:
     OrchestratorEditorGraphFrame* find_frame(const StringName& p_name);
 
     void remove_node(OrchestratorEditorGraphNode* p_node, bool p_confirm = true);
-    void remove_nodes(const TypedArray<OrchestratorEditorGraphNode>& p_nodes, bool p_confirm = true);
+    void remove_nodes(const PackedInt64Array& p_node_ids, bool p_confirm = true);
     void remove_selected_nodes(bool p_confirm = true);
     void remove_frame(OrchestratorEditorGraphFrame* p_frame, bool p_confirm = true);
 
@@ -367,6 +382,8 @@ public:
     void select_nodes(const PackedInt64Array& p_ids);
 
     int64_t get_selection_count();
+
+    bool is_moving_selection() const { return _moving_selection; }
 
     Rect2 get_bounds_for_nodes(bool p_only_selected, bool p_padding = 0.f);
     Rect2 get_bounds_for_nodes(const Vector<OrchestratorEditorGraphNode*>& p_nodes, bool p_padding = 0.f);

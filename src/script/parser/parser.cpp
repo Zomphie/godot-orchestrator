@@ -23,6 +23,7 @@
 #include "common/settings.h"
 #include "common/string_utils.h"
 #include "core/godot/object/class_db.h"
+#include "orchestration/annotation_registry.h"
 #include "orchestration/node_pin.h"
 #include "orchestration/nodes/branch.h"
 #include "orchestration/nodes/call_function.h"
@@ -33,10 +34,13 @@
 #include "script/script.h"
 #include "script/script_server.h"
 
+#include <climits>
 #include <functional>
 #include <ranges>
 #include <string>
 
+#include <godot_cpp/classes/multiplayer_api.hpp>
+#include <godot_cpp/classes/multiplayer_peer.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 
 #ifdef DEBUG_ENABLED
@@ -177,7 +181,8 @@ void OScriptParser::bind_handlers() {
     register_statement_handler<OScriptNodeVariableGet,              &OScriptParser::build_variable_get_validated>();
     register_statement_handler<OScriptNodeVariableSet,              &OScriptParser::build_variable_set>();
     register_statement_handler<OScriptNodePropertySet,              &OScriptParser::build_property_set>();
-    register_statement_handler<OScriptNodeAssignLocalVariable,      &OScriptParser::build_assign_local_variable>();
+    register_statement_handler<OScriptNodeLocalVariableSet,         &OScriptParser::build_local_variable_set>();
+    register_statement_handler<OScriptNodeAssignLocalVariableLegacy, &OScriptParser::build_assign_local_variable_legacy>();
     register_statement_handler<OScriptNodeCallMemberFunction,       &OScriptParser::build_call_member_function>();
     register_statement_handler<OScriptNodeCallBuiltinFunction,      &OScriptParser::build_call_builtin_function>();
     register_statement_handler<OScriptNodeCallScriptFunction,       &OScriptParser::build_call_script_function>();
@@ -237,7 +242,9 @@ void OScriptParser::bind_handlers() {
     register_expression_handler<OScriptNodeCallBuiltinFunction, &OScriptParser::build_pure_call>();
     register_expression_handler<OScriptNodeCallScriptFunction,  &OScriptParser::build_pure_call>();
     register_expression_handler<OScriptNodeCallStaticFunction,  &OScriptParser::build_pure_call>();
-    register_expression_handler<OScriptNodeLocalVariable,       &OScriptParser::build_get_local_variable>();
+    register_expression_handler<OScriptNodeLocalVariableGet,    &OScriptParser::build_local_variable_get>();
+    register_expression_handler<OScriptNodeLocalVariableSet,    &OScriptParser::build_local_variable_set_expression>();
+    register_expression_handler<OScriptNodeLocalVariableLegacy, &OScriptParser::build_get_local_variable_legacy>();
     register_expression_handler<OScriptNodeMakeDictionary,      &OScriptParser::build_make_dictionary>();
     register_expression_handler<OScriptNodeMakeArray,           &OScriptParser::build_make_array>();
     register_expression_handler<OScriptNodeArrayGet,            &OScriptParser::build_array_get_at_index>();
@@ -377,6 +384,10 @@ StringName OScriptParser::create_cached_variable_name(const Ref<OScriptNodePin>&
     }
 
     if (const Ref<OScriptNodeLocalVariable>& node = source_node; node.is_valid()) {
+        return node->get_variable_name();
+    }
+
+    if (const Ref<OScriptNodeLocalVariableLegacy>& node = source_node; node.is_valid()) {
         const String local_var_name = node->get_variable_name();
         if (!local_var_name.is_empty()) {
             return local_var_name;
@@ -818,6 +829,7 @@ void OScriptParser::push_warning(const Node* p_source, OScriptWarning::Code p_co
 
     PendingWarning pw;
     pw.source = p_source;
+    pw.function = current_function;
     pw.code = p_code;
     pw.treated_as_error = warn_level == OScriptWarning::ERROR;
     pw.symbols = p_symbols;
@@ -831,6 +843,13 @@ void OScriptParser::apply_pending_warnings() {
             continue;
         }
         if (warning_ignore_start_nodes[pw.code] <= pw.source->script_node_id) {
+            continue;
+        }
+        // @warning_ignore on the member itself, or on the function whose body raised it.
+        if (pw.source->ignored_warning_codes.has(pw.code)) {
+            continue;
+        }
+        if (pw.function && pw.function->ignored_warning_codes.has(pw.code)) {
             continue;
         }
 
@@ -881,19 +900,71 @@ void OScriptParser::evaluate_warning_directory_rules_for_script_path() {
 
 #endif
 
+OScriptParser::ExpressionNode* OScriptParser::build_composed_input(const Ref<OScriptNodePin>& p_pin) {
+    // With nothing wired into any sub-pin the value is fully known here, so fold it to one literal
+    // rather than constructing it at runtime.
+    if (!p_pin->has_any_connections()) {
+        return create_literal(p_pin->get_effective_default_value());
+    }
+
+    // Otherwise construct the value the same way a Make node does: Type(c1, c2, ...), with each
+    // sub-pin resolved on its own, so a nested split composes recursively.
+    const String type_name = Variant::get_type_name(p_pin->get_type());
+
+    CallNode* call_node = alloc_node<CallNode>();
+    call_node->callee = build_identifier(type_name);
+    call_node->function_name = type_name;
+    for (const Ref<OScriptNodePin>& sub_pin : p_pin->get_sub_pins()) {
+        call_node->arguments.push_back(resolve_input(sub_pin));
+    }
+    return call_node;
+}
+
+Ref<OScriptNodePin> OScriptParser::get_split_root(const Ref<OScriptNodePin>& p_pin, Vector<String>& r_components) {
+    // Walk up to the top-level pin, recording the component path root-first
+    Ref<OScriptNodePin> pin = p_pin;
+    while (pin.is_valid() && pin->is_sub_pin()) {
+        r_components.insert(0, pin->get_component_name());
+        pin = Ref<OScriptNodePin>(pin->get_parent_pin());
+    }
+    return pin;
+}
+
+OScriptParser::ExpressionNode* OScriptParser::wrap_components(ExpressionNode* p_base, const Vector<String>& p_components) {
+    // Read the component the same way a Break node does: base.component
+    ExpressionNode* expression = p_base;
+    for (const String& component : p_components) {
+        SubscriptNode* subscript = alloc_node<SubscriptNode>();
+        subscript->base = expression;
+        subscript->attribute = build_identifier(component);
+        subscript->is_attribute = true;
+        expression = subscript;
+    }
+    return expression;
+}
+
 OScriptParser::ExpressionNode* OScriptParser::resolve_input(const Ref<OScriptNodePin>& p_pin) {
     ERR_FAIL_COND_V(p_pin.is_null(), create_literal(Variant()));
     ERR_FAIL_COND_V(p_pin->is_execution(), create_literal(Variant()));
+
+    // A split input is composed from its sub-pins
+    if (p_pin->is_split()) {
+        return build_composed_input(p_pin);
+    }
 
     if (!p_pin->has_any_connections()) {
         return build_literal(p_pin);
     }
 
-    const Ref<OScriptNodePin> source_pin = p_pin->get_resolved_connection();
-    if (!source_pin.is_valid()) {
+    const Ref<OScriptNodePin> connected_pin = p_pin->get_resolved_connection();
+    if (!connected_pin.is_valid()) {
         return build_literal(p_pin);
     }
 
+    // A sub-pin output is resolved through its root pin, then narrowed to the component; this keeps
+    // a non-pure result cached once and shared by every component read from it.
+    Vector<String> components;
+    const Ref<OScriptNodePin> source_pin = get_split_root(connected_pin, components);
     const Ref<OScriptNode>& source_node = source_pin->get_owning_node();
 
     // Check object identity for passthroughs
@@ -907,11 +978,11 @@ OScriptParser::ExpressionNode* OScriptParser::resolve_input(const Ref<OScriptNod
                     NodeScope scope(*this, source_node->get_id());
                     SelfNode* self = alloc_node<SelfNode>();
                     self->current_class = current_class;
-                    return self;
+                    return wrap_components(self, components);
                 }
 
                 // Use default identifier resolution
-                return build_identifier(alias);
+                return wrap_components(build_identifier(alias), components);
             }
         }
     }
@@ -920,13 +991,13 @@ OScriptParser::ExpressionNode* OScriptParser::resolve_input(const Ref<OScriptNod
     for (const Ref<OScriptNodePin>& input : source_node->find_pins(PD_Input)) {
         if (input.is_valid() && input->is_execution()) {
             const String cache_name = create_cached_variable_name(source_pin);
-            return build_identifier(cache_name);
+            return wrap_components(build_identifier(cache_name), components);
         }
     }
 
     // Pure nodes always build an expression without caching
     if (source_node->is_pure()) {
-        return build_expression(p_pin, source_node, source_pin);
+        return wrap_components(build_expression(p_pin, source_node, source_pin), components);
     }
 
     // For non-pure nodes, cache in a variable
@@ -945,63 +1016,93 @@ OScriptParser::ExpressionNode* OScriptParser::resolve_input(const Ref<OScriptNod
         current_suite->add_local(local, current_function);
     }
 
-    return build_identifier(cache_name);
+    return wrap_components(build_identifier(cache_name), components);
 }
 
 StringName OScriptParser::get_term_name(const Ref<OScriptNodePin>& p_pin) {
     ERR_FAIL_COND_V(p_pin.is_null(), "");
 
+    // A split input has no single source; name a local holding its composed value
+    if (p_pin->is_split()) {
+        const String composed_name = create_unique_name(p_pin);
+        if (current_suite && !current_suite->has_local(composed_name)) {
+            create_local_and_push(composed_name, build_composed_input(p_pin), p_pin);
+        }
+        return composed_name;
+    }
+
     if (!p_pin->has_any_connections()) {
         return "";
     }
 
-    const Ref<OScriptNodePin> source_pin = p_pin->get_resolved_connection();
-    if (!source_pin.is_valid()) {
+    const Ref<OScriptNodePin> connected_pin = p_pin->get_resolved_connection();
+    if (!connected_pin.is_valid()) {
         return "";
     }
+
+    Vector<String> components;
+    const Ref<OScriptNodePin> source_pin = get_split_root(connected_pin, components);
     const Ref<OScriptNode> source_node = source_pin->get_owning_node();
-    const uint64_t source_id = source_node->get_id();
 
     // Check for aliases
+    String root_name;
     if (current_suite) {
-        const uint64_t key = (source_id << 32) | source_pin->get_pin_index();
+        const uint64_t key = SuiteNode::create_alias_key(source_pin);
         if (current_suite->aliases.has(key)) {
-            return current_suite->aliases[key];
+            root_name = current_suite->aliases[key];
         }
     }
 
-    // Get or create cached variable
-    // The declaration is attributed to the source node
-    const String variable_name = create_cached_variable_name(source_pin);
-    if (current_suite && !current_suite->has_local(variable_name)) {
-        NodeScope scope(*this, source_node->get_id());
-        // Build the expression and cache it
-        ExpressionNode* expression = build_expression(p_pin, source_node, source_pin);
-        create_local_and_push(variable_name, expression, source_pin);
+    if (root_name.is_empty()) {
+        // Get or create cached variable
+        // The declaration is attributed to the source node
+        root_name = create_cached_variable_name(source_pin);
+        if (current_suite && !current_suite->has_local(root_name)) {
+            NodeScope scope(*this, source_node->get_id());
+            // Build the expression and cache it
+            ExpressionNode* expression = build_expression(p_pin, source_node, source_pin);
+            create_local_and_push(root_name, expression, source_pin);
+        }
     }
 
-    return variable_name;
+    if (components.is_empty()) {
+        return root_name;
+    }
+
+    // A component needs its own named term, read from the root's term
+    const String component_name = vformat("%s_%s", root_name, StringUtils::join("_", components));
+    if (current_suite && !current_suite->has_local(component_name)) {
+        create_local_and_push(component_name, wrap_components(build_identifier(root_name), components), connected_pin);
+    }
+    return component_name;
 }
 
 OScriptParser::ExpressionNode* OScriptParser::build_expression(const Ref<OScriptNodePin>& p_pin) {
     ERR_FAIL_COND_V(p_pin.is_null(), nullptr);
     ERR_FAIL_COND_V(p_pin->is_execution(), nullptr);
 
+    // A split input is composed from its sub-pins
+    if (p_pin->is_split()) {
+        return build_composed_input(p_pin);
+    }
+
     if (!p_pin->has_any_connections()) {
         return build_literal(p_pin);
     }
 
-    const Ref<OScriptNodePin> source_pin = p_pin->get_resolved_connection();
-    if (!source_pin.is_valid()) {
+    const Ref<OScriptNodePin> connected_pin = p_pin->get_resolved_connection();
+    if (!connected_pin.is_valid()) {
         return build_literal(p_pin);
     }
+
+    Vector<String> components;
+    const Ref<OScriptNodePin> source_pin = get_split_root(connected_pin, components);
     const Ref<OScriptNode> source_node = source_pin->get_owning_node();
 
     if (current_suite) {
-        uint64_t node_id = source_node->get_id();
-        uint64_t key = (node_id << 32) | source_pin->get_pin_index();
+        const uint64_t key = SuiteNode::create_alias_key(source_pin);
         if (current_suite->aliases.has(key)) {
-            return build_identifier(current_suite->aliases[key]);
+            return wrap_components(build_identifier(current_suite->aliases[key]), components);
         }
     }
 
@@ -1011,7 +1112,7 @@ OScriptParser::ExpressionNode* OScriptParser::build_expression(const Ref<OScript
     // Control flow nodes always just return a cached identifier?
     for (const Ref<OScriptNodePin>& input : source_node->find_pins(PD_Input)) {
         if (input.is_valid() && input->is_execution()) {
-            return build_identifier(cachedVariableName);
+            return wrap_components(build_identifier(cachedVariableName), components);
         }
     }
 
@@ -1025,7 +1126,7 @@ OScriptParser::ExpressionNode* OScriptParser::build_expression(const Ref<OScript
 
         // For nodes that are considered pure, the computed value will not be cached.
         if (source_node->is_pure()) {
-            return expression;
+            return wrap_components(expression, components);
         }
 
         // Store dependency node's output in a variable
@@ -1037,7 +1138,7 @@ OScriptParser::ExpressionNode* OScriptParser::build_expression(const Ref<OScript
         current_suite->add_local(local_var, current_function);
     }
 
-    return build_identifier(cachedVariableName);
+    return wrap_components(build_identifier(cachedVariableName), components);
 }
 
 OScriptParser::ExpressionNode* OScriptParser::build_expression(const Ref<OScriptNode>& p_node, int p_input_index) {
@@ -1426,9 +1527,14 @@ OScriptParser::ExpressionNode* OScriptParser::build_deconstruct(const Ref<OScrip
         }
 
         if (reduce) {
-            const int index = p_pin->get_pin_index();
+            // Map the Break output to the Make input at the same logical position, not the same port;
+            // the two differ once a Make input is split. Derived outputs such as Rect2's end have no
+            // Make counterpart and fall through to the subscript below.
+            const int index = p_node->find_pins(PD_Output).find(p_pin);
             const Ref<OScriptNodePin> make_input_pin = source_node->find_pin(index, PD_Input);
-            return resolve_input(make_input_pin);
+            if (make_input_pin.is_valid()) {
+                return resolve_input(make_input_pin);
+            }
         }
     }
 
@@ -1517,7 +1623,25 @@ OScriptParser::ExpressionNode* OScriptParser::build_pure_call(const Ref<OScriptN
     return call_node;
 }
 
-OScriptParser::ExpressionNode* OScriptParser::build_get_local_variable(const Ref<OScriptNodeLocalVariable>& p_node, const Ref<OScriptNodePin>& p_pin) {
+OScriptParser::ExpressionNode* OScriptParser::build_local_variable_get(const Ref<OScriptNodeLocalVariableGet>& p_node, const Ref<OScriptNodePin>& p_pin) {
+    if (!p_node->get_variable().is_valid()) {
+        push_error(vformat(R"(Local variable "%s" is not declared by the function.)", p_node->get_variable_name()));
+        return build_identifier(p_node->get_variable_name());
+    }
+
+    return build_identifier(p_node->get_variable()->get_variable_name());
+}
+
+OScriptParser::ExpressionNode* OScriptParser::build_local_variable_set_expression(const Ref<OScriptNodeLocalVariableSet>& p_node, const Ref<OScriptNodePin>& p_pin) {
+    if (!p_node->get_variable().is_valid()) {
+        push_error(vformat(R"(Local variable "%s" is not declared by the function.)", p_node->get_variable_name()));
+        return build_identifier(p_node->get_variable_name());
+    }
+
+    return build_identifier(p_node->get_variable()->get_variable_name());
+}
+
+OScriptParser::ExpressionNode* OScriptParser::build_get_local_variable_legacy(const Ref<OScriptNodeLocalVariableLegacy>& p_node, const Ref<OScriptNodePin>& p_pin) {
     String variable_name = p_node->get_variable_name();
     if (variable_name.is_empty()) {
         variable_name = create_cached_variable_name(p_pin);
@@ -1911,7 +2035,29 @@ OScriptParser::StatementResult OScriptParser::build_property_set(const Ref<OScri
     return create_statement_result(p_script_node, 0);
 }
 
-OScriptParser::StatementResult OScriptParser::build_assign_local_variable(const Ref<OScriptNodeAssignLocalVariable>& p_script_node) {
+OScriptParser::StatementResult OScriptParser::build_local_variable_set(const Ref<OScriptNodeLocalVariableSet>& p_script_node) {
+    if (!p_script_node.is_valid()) {
+        return create_stop_result();
+    }
+
+    const Ref<OScriptLocalVariable> variable = p_script_node->get_variable();
+    if (!variable.is_valid()) {
+        push_error(vformat(R"(Local variable "%s" is not declared by the function.)", p_script_node->get_variable_name()));
+        return create_stop_result();
+    }
+
+    const String variable_name = variable->get_variable_name();
+    const Ref<OScriptNodePin> value_pin = p_script_node->find_pin(1, PD_Input);
+
+    AssignmentNode* assign = alloc_node<AssignmentNode>();
+    assign->assignee = build_identifier(variable_name);
+    assign->assigned_value = resolve_input(value_pin);
+    add_statement(assign);
+
+    return create_statement_result(p_script_node, 0);
+}
+
+OScriptParser::StatementResult OScriptParser::build_assign_local_variable_legacy(const Ref<OScriptNodeAssignLocalVariableLegacy>& p_script_node) {
     const Ref<OScriptNodePin> variable_pin = p_script_node->find_pin(1, PD_Input);
     const Ref<OScriptNodePin> value_pin = p_script_node->find_pin(2, PD_Input);
 
@@ -3002,7 +3148,8 @@ OScriptParser::StatementResult OScriptParser::build_message_dialogue(const Ref<O
     MatchNode* match_node = alloc_node<MatchNode>();
     match_node->test = arg_get;
     for (int i = 0; i < choice_count; i++) {
-        const Ref<OScriptNodePin> output_pin = p_script_node->find_pin(4 + i, PD_Output);
+        // Choice exits are the only outputs when choices exist
+        const Ref<OScriptNodePin> output_pin = p_script_node->find_pin(i, PD_Output);
         if (output_pin.is_valid() && output_pin->has_any_connections()) {
             MatchBranchNode* branch = alloc_node<MatchBranchNode>();
             PatternNode* pattern = alloc_node<PatternNode>();
@@ -3173,17 +3320,25 @@ OScriptParser::VariableNode* OScriptParser::build_variable(const Ref<OScriptVari
     variable->export_info.usage &= ~PROPERTY_USAGE_SCRIPT_VARIABLE;
     variable->datatype_specifier = build_type(p_variable->get_info());
 
-    if (p_variable->is_exported()) {
-        AnnotationNode* annotation = memnew(AnnotationNode);
-        annotation->name = "@export";
-        annotation->info = &valid_annotations[annotation->name];
+    build_annotations(variable, p_variable->get_annotations(), AnnotationInfo::TargetKind::VARIABLE);
 
-        if (annotation->applies_to(AnnotationInfo::TargetKind::VARIABLE)) {
-            variable->annotations.push_back(annotation);
+    if (p_variable->is_node_path_initializer()) {
+        // get_node(path) as T, so the analyzer sees the same shape as a GDScript "$Path" initializer
+        // and raises GET_NODE_DEFAULT_WITHOUT_ONREADY when the annotation is missing.
+        CallNode* get_node = create_func_call("get_node");
+        get_node->arguments.push_back(create_literal(p_variable->get_default_value()));
+
+        ExpressionNode* initializer = get_node;
+        if (!PropertyUtils::is_variant(p_variable->get_info())) {
+            CastNode* cast = alloc_node<CastNode>();
+            cast->operand = get_node;
+            cast->cast_type = build_type(p_variable->get_info());
+            initializer = cast;
         }
-    }
 
-    if (p_variable->get_default_value().get_type() != Variant::NIL) {
+        variable->initializer = initializer;
+        variable->assignments++;
+    } else if (p_variable->get_default_value().get_type() != Variant::NIL) {
         ExpressionNode* default_value = create_expression(p_variable->get_default_value());
         variable->initializer = default_value;
         variable->assignments++;
@@ -3260,6 +3415,8 @@ OScriptParser::FunctionNode* OScriptParser::build_function(const Ref<OScriptFunc
 
     function_node->return_type = build_type(p_function->get_method_info().return_val);
 
+    build_annotations(function_node, p_function->get_annotations(), AnnotationInfo::TargetKind::FUNCTION);
+
     #ifdef TOOLS_ENABLED
     function_node->doc_data.description = p_function->get_description();
     #endif
@@ -3295,8 +3452,28 @@ OScriptParser::FunctionNode* OScriptParser::build_function(const Ref<OScriptFunc
         }
 
         // Apply function local variables
+        const int entry_node_id = p_function->get_owning_node_id();
+        for (const Ref<OScriptLocalVariable>& local_variable : p_function->get_local_variables()) {
+            const PropertyInfo& info = local_variable->get_info();
+
+            // A declared default value initializes the local; otherwise the type default applies
+            ExpressionNode* initializer = nullptr;
+            if (local_variable->get_default_value().get_type() != Variant::NIL) {
+                initializer = create_expression(local_variable->get_default_value());
+            }
+
+            VariableNode* local = create_local(local_variable->get_variable_name(), initializer, body);
+            if (!PropertyUtils::is_nil_no_variant(info)) {
+                local->datatype_specifier = build_type(info);
+            }
+            local->identifier->script_node_id = entry_node_id;
+            local->script_node_id = entry_node_id;
+            add_statement(local, body);
+        }
+
+        // Apply legacy graph-declared local variables (unconverted nodes only)
         for (const KeyValue<NodeId, StringName>& local_var : function_info.local_variables) {
-            const Ref<OScriptNodeLocalVariable> var_node = p_function->get_graph()->get_node(local_var.key);
+            const Ref<OScriptNodeLocalVariableLegacy> var_node = p_function->get_graph()->get_node(local_var.key);
             if (var_node.is_valid()) {
                 const Ref<OScriptNodePin> pin = var_node->find_pin(0, PD_Output);
                 if (pin.is_valid()) {
@@ -3745,6 +3922,330 @@ bool OScriptParser::export_annotations(AnnotationNode *p_annotation, Node *p_tar
 	return true;
 }
 
+bool OScriptParser::export_storage_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class) {
+    ERR_FAIL_COND_V_MSG(p_target->type != Node::VARIABLE, false, vformat(R"("%s" annotation can only be applied to variables.)", p_annotation->name));
+
+    VariableNode* variable = static_cast<VariableNode*>(p_target);
+    if (variable->is_static) {
+        push_error(vformat(R"(Annotation "%s" cannot be applied to a static variable.)", p_annotation->name), p_annotation);
+        return false;
+    }
+    if (variable->exported) {
+        push_error(vformat(R"(Annotation "%s" cannot be used with another "@export" annotation.)", p_annotation->name), p_annotation);
+        return false;
+    }
+
+    variable->exported = true;
+
+    // Save the info because the compiler uses export info for overwriting member info.
+    variable->export_info = variable->get_datatype().to_property_info(variable->identifier->name);
+    variable->export_info.usage |= PROPERTY_USAGE_STORAGE;
+
+    return true;
+}
+
+bool OScriptParser::export_custom_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class) {
+    ERR_FAIL_COND_V_MSG(p_target->type != Node::VARIABLE, false, vformat(R"("%s" annotation can only be applied to variables.)", p_annotation->name));
+    ERR_FAIL_COND_V_MSG(p_annotation->resolved_arguments.size() < 2, false, R"(Annotation "@export_custom" requires 2 arguments.)");
+
+    VariableNode* variable = static_cast<VariableNode*>(p_target);
+    if (variable->is_static) {
+        push_error(vformat(R"(Annotation "%s" cannot be applied to a static variable.)", p_annotation->name), p_annotation);
+        return false;
+    }
+    if (variable->exported) {
+        push_error(vformat(R"(Annotation "%s" cannot be used with another "@export" annotation.)", p_annotation->name), p_annotation);
+        return false;
+    }
+
+    variable->exported = true;
+
+    const DataType export_type = variable->get_datatype();
+    variable->export_info.type = export_type.builtin_type;
+    variable->export_info.hint = static_cast<PropertyHint>(p_annotation->resolved_arguments[0].operator int64_t());
+    variable->export_info.hint_string = p_annotation->resolved_arguments[1];
+
+    if (p_annotation->resolved_arguments.size() >= 3) {
+        variable->export_info.usage = p_annotation->resolved_arguments[2].operator int64_t();
+    }
+
+    return true;
+}
+
+bool OScriptParser::export_tool_button_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class) {
+    #ifdef TOOLS_ENABLED
+    ERR_FAIL_COND_V_MSG(p_target->type != Node::VARIABLE, false, vformat(R"("%s" annotation can only be applied to variables.)", p_annotation->name));
+    ERR_FAIL_COND_V(p_annotation->resolved_arguments.is_empty(), false);
+
+    VariableNode* variable = static_cast<VariableNode*>(p_target);
+    if (variable->is_static) {
+        push_error(vformat(R"(Annotation "%s" cannot be applied to a static variable.)", p_annotation->name), p_annotation);
+        return false;
+    }
+    if (variable->exported) {
+        push_error(vformat(R"(Annotation "%s" cannot be used with another "@export" annotation.)", p_annotation->name), p_annotation);
+        return false;
+    }
+
+    const DataType variable_type = variable->get_datatype();
+    if (!variable_type.is_variant() && variable_type.is_hard_type()) {
+        if (variable_type.kind != DataType::BUILTIN || variable_type.builtin_type != Variant::CALLABLE) {
+            push_error(vformat(R"("@export_tool_button" annotation requires a variable of type "Callable", but type "%s" was given instead.)", variable_type.to_string()), p_annotation);
+            return false;
+        }
+    }
+
+    variable->exported = true;
+
+    // Build the hint string (format: `<text>[,<icon>]`).
+    String hint_string = p_annotation->resolved_arguments[0].operator String();
+    if (p_annotation->resolved_arguments.size() > 1) {
+        hint_string += "," + p_annotation->resolved_arguments[1].operator String();
+    }
+
+    variable->export_info.type = Variant::CALLABLE;
+    variable->export_info.hint = PROPERTY_HINT_TOOL_BUTTON;
+    variable->export_info.hint_string = hint_string;
+    variable->export_info.usage = PROPERTY_USAGE_EDITOR;
+    #endif
+
+    return true;
+}
+
+bool OScriptParser::rpc_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class) {
+    ERR_FAIL_COND_V_MSG(p_target->type != Node::FUNCTION, false, vformat(R"("%s" annotation can only be applied to functions.)", p_annotation->name));
+
+    FunctionNode* function = static_cast<FunctionNode*>(p_target);
+    if (function->rpc_config.get_type() != Variant::NIL) {
+        push_error(R"(RPC annotations can only be used once per function.)", p_annotation);
+        return false;
+    }
+
+    Dictionary rpc_config;
+    rpc_config["rpc_mode"] = MultiplayerAPI::RPC_MODE_AUTHORITY;
+
+    if (!p_annotation->resolved_arguments.is_empty()) {
+        unsigned char locality_args = 0;
+        unsigned char permission_args = 0;
+        unsigned char transfer_mode_args = 0;
+
+        for (int i = 0; i < p_annotation->resolved_arguments.size(); i++) {
+            if (i == 3) {
+                rpc_config["channel"] = p_annotation->resolved_arguments[i].operator int();
+                continue;
+            }
+
+            const String arg = p_annotation->resolved_arguments[i].operator String();
+            if (arg == "call_local") {
+                locality_args++;
+                rpc_config["call_local"] = true;
+            } else if (arg == "call_remote") {
+                locality_args++;
+                rpc_config["call_local"] = false;
+            } else if (arg == "any_peer") {
+                permission_args++;
+                rpc_config["rpc_mode"] = MultiplayerAPI::RPC_MODE_ANY_PEER;
+            } else if (arg == "authority") {
+                permission_args++;
+                rpc_config["rpc_mode"] = MultiplayerAPI::RPC_MODE_AUTHORITY;
+            } else if (arg == "reliable") {
+                transfer_mode_args++;
+                rpc_config["transfer_mode"] = MultiplayerPeer::TRANSFER_MODE_RELIABLE;
+            } else if (arg == "unreliable") {
+                transfer_mode_args++;
+                rpc_config["transfer_mode"] = MultiplayerPeer::TRANSFER_MODE_UNRELIABLE;
+            } else if (arg == "unreliable_ordered") {
+                transfer_mode_args++;
+                rpc_config["transfer_mode"] = MultiplayerPeer::TRANSFER_MODE_UNRELIABLE_ORDERED;
+            } else {
+                push_error(R"(Invalid RPC argument. Must be one of: "call_local"/"call_remote" (local calls), "any_peer"/"authority" (permission), "reliable"/"unreliable"/"unreliable_ordered" (transfer mode).)", p_annotation);
+            }
+        }
+
+        if (locality_args > 1) {
+            push_error(R"(Invalid RPC config. The locality ("call_local"/"call_remote") must be specified no more than once.)", p_annotation);
+        } else if (permission_args > 1) {
+            push_error(R"(Invalid RPC config. The permission ("any_peer"/"authority") must be specified no more than once.)", p_annotation);
+        } else if (transfer_mode_args > 1) {
+            push_error(R"(Invalid RPC config. The transfer mode ("reliable"/"unreliable"/"unreliable_ordered") must be specified no more than once.)", p_annotation);
+        }
+    }
+
+    function->rpc_config = rpc_config;
+    return true;
+}
+
+bool OScriptParser::onready_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class) {
+    ERR_FAIL_COND_V_MSG(p_target->type != Node::VARIABLE, false, R"("@onready" annotation can only be applied to class variables.)");
+    ERR_FAIL_NULL_V(p_class, false);
+
+    if (!ClassDB::is_parent_class(p_class->base_type.native_type, "Node")) {
+        push_error(R"("@onready" can only be used in classes that inherit "Node".)", p_annotation);
+        return false;
+    }
+
+    VariableNode* variable = static_cast<VariableNode*>(p_target);
+    if (variable->is_static) {
+        push_error(R"("@onready" annotation cannot be applied to a static variable.)", p_annotation);
+        return false;
+    }
+    if (variable->onready) {
+        push_error(R"("@onready" annotation can only be used once per variable.)", p_annotation);
+        return false;
+    }
+
+    variable->onready = true;
+    p_class->onready_used = true;
+    return true;
+}
+
+bool OScriptParser::warning_annotations(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class) {
+    #ifndef DEBUG_ENABLED
+    // Only available in debug builds.
+    return true;
+    #else
+    if (is_project_ignoring_warnings) {
+        // We already ignore all warnings, let's optimize it.
+        return true;
+    }
+
+    bool has_error = false;
+    for (const Variant& warning_name : p_annotation->resolved_arguments) {
+        const OScriptWarning::Code warning_code = OScriptWarning::get_code_from_name(String(warning_name).to_upper());
+        if (warning_code == OScriptWarning::WARNING_MAX) {
+            push_error(vformat(R"(Invalid warning name: "%s".)", warning_name), p_annotation);
+            has_error = true;
+        } else if (!p_target->ignored_warning_codes.has(warning_code)) {
+            // GDScript ignores by line range; here the target node and, for functions, every warning
+            // raised while its body is analyzed are suppressed instead.
+            p_target->ignored_warning_codes.push_back(warning_code);
+        }
+    }
+
+    return !has_error;
+    #endif
+}
+
+void OScriptParser::build_annotations(Node* p_target, const Vector<OScriptAnnotation>& p_annotations, uint32_t p_target_kind) {
+    for (const OScriptAnnotation& annotation : p_annotations) {
+        if (!valid_annotations.has(annotation.name)) {
+            push_error(vformat(R"(Unknown annotation "%s".)", annotation.name), p_target);
+            continue;
+        }
+
+        AnnotationNode* node = alloc_node<AnnotationNode>();
+        node->name = annotation.name;
+        node->info = &valid_annotations[annotation.name];
+        node->script_node_id = p_target->script_node_id;
+
+        if (!node->applies_to(p_target_kind)) {
+            push_error(vformat(R"(Annotation "%s" is not allowed in this context.)", annotation.name), p_target);
+            continue;
+        }
+
+        // Mirrors GDScriptParser::validate_annotation_arguments
+        const MethodInfo& info = node->info->info;
+        const int argument_count = annotation.arguments.size();
+        if (((info.flags & METHOD_FLAG_VARARG) == 0) && argument_count > info.arguments.size()) {
+            push_error(vformat(R"("%s" annotation requires at most %d arguments, but %d were given.)", annotation.name, info.arguments.size(), argument_count), p_target);
+            continue;
+        }
+        if (argument_count < info.arguments.size() - info.default_arguments.size()) {
+            push_error(vformat(R"("%s" annotation requires at least %d arguments, but %d were given.)", annotation.name, info.arguments.size() - info.default_arguments.size(), argument_count), p_target);
+            continue;
+        }
+
+        for (int i = 0; i < argument_count; i++) {
+            node->arguments.push_back(create_expression(annotation.arguments[i]));
+        }
+
+        p_target->annotations.push_back(node);
+    }
+}
+
+OScriptParser::AnnotationAction OScriptParser::get_annotation_action(const StringName& p_name) {
+    if (p_name == StringName("@export")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_NONE, Variant::NIL>;
+    } else if (p_name == StringName("@export_enum")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_ENUM, Variant::NIL>;
+    } else if (p_name == StringName("@export_file")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_FILE, Variant::STRING>;
+    } else if (p_name == StringName("@export_dir")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_DIR, Variant::STRING>;
+    } else if (p_name == StringName("@export_global_file")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_GLOBAL_FILE, Variant::STRING>;
+    } else if (p_name == StringName("@export_global_dir")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_GLOBAL_DIR, Variant::STRING>;
+    } else if (p_name == StringName("@export_multiline")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_MULTILINE_TEXT, Variant::STRING>;
+    } else if (p_name == StringName("@export_placeholder")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_PLACEHOLDER_TEXT, Variant::STRING>;
+    } else if (p_name == StringName("@export_range")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_RANGE, Variant::FLOAT>;
+    } else if (p_name == StringName("@export_exp_easing")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_EXP_EASING, Variant::FLOAT>;
+    } else if (p_name == StringName("@export_color_no_alpha")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_COLOR_NO_ALPHA, Variant::COLOR>;
+    } else if (p_name == StringName("@export_node_path")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_NODE_PATH_VALID_TYPES, Variant::NODE_PATH>;
+    } else if (p_name == StringName("@export_flags")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_FLAGS, Variant::INT>;
+    } else if (p_name == StringName("@export_flags_2d_render")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_LAYERS_2D_RENDER, Variant::INT>;
+    } else if (p_name == StringName("@export_flags_2d_physics")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_LAYERS_2D_PHYSICS, Variant::INT>;
+    } else if (p_name == StringName("@export_flags_2d_navigation")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_LAYERS_2D_NAVIGATION, Variant::INT>;
+    } else if (p_name == StringName("@export_flags_3d_render")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_LAYERS_3D_RENDER, Variant::INT>;
+    } else if (p_name == StringName("@export_flags_3d_physics")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_LAYERS_3D_PHYSICS, Variant::INT>;
+    } else if (p_name == StringName("@export_flags_3d_navigation")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_LAYERS_3D_NAVIGATION, Variant::INT>;
+    } else if (p_name == StringName("@export_flags_avoidance")) {
+        return &OScriptParser::export_annotations<PROPERTY_HINT_LAYERS_AVOIDANCE, Variant::INT>;
+    } else if (p_name == StringName("@export_storage")) {
+        return &OScriptParser::export_storage_annotation;
+    } else if (p_name == StringName("@export_custom")) {
+        return &OScriptParser::export_custom_annotation;
+    } else if (p_name == StringName("@export_tool_button")) {
+        return &OScriptParser::export_tool_button_annotation;
+    } else if (p_name == StringName("@rpc")) {
+        return &OScriptParser::rpc_annotation;
+    } else if (p_name == StringName("@onready")) {
+        return &OScriptParser::onready_annotation;
+    } else if (p_name == StringName("@warning_ignore")) {
+        return &OScriptParser::warning_annotations;
+    }
+    return nullptr;
+}
+
+uint32_t OScriptParser::get_annotation_target_kinds(uint32_t p_registry_targets) {
+    uint32_t kinds = AnnotationInfo::NONE;
+    if (p_registry_targets & OScriptAnnotationRegistry::TARGET_VARIABLE) {
+        kinds |= AnnotationInfo::VARIABLE;
+    }
+    if (p_registry_targets & (OScriptAnnotationRegistry::TARGET_FUNCTION | OScriptAnnotationRegistry::TARGET_EVENT)) {
+        kinds |= AnnotationInfo::FUNCTION;
+    }
+    if (p_registry_targets & OScriptAnnotationRegistry::TARGET_CLASS) {
+        kinds |= AnnotationInfo::CLASS;
+    }
+    return kinds;
+}
+
+void OScriptParser::register_annotations() {
+    // The registry owns the signatures and targets; the parser only contributes the apply callbacks.
+    // Every descriptor must have one, otherwise the model could accept an annotation the compiler
+    // cannot apply.
+    for (const OScriptAnnotationDescriptor& descriptor : OScriptAnnotationRegistry::get_descriptors()) {
+        const AnnotationAction action = get_annotation_action(descriptor.info.name);
+        ERR_CONTINUE_MSG(action == nullptr, vformat(R"(Annotation "%s" has no parser action.)", descriptor.info.name));
+
+        register_annotation(descriptor.info, get_annotation_target_kinds(descriptor.targets), action);
+    }
+}
+
 Error OScriptParser::parse(Orchestration* p_orchestration, const String& p_script_path) {
     ERR_FAIL_NULL_V_MSG(p_orchestration, ERR_PARSE_ERROR, "Orchestration was null and cannot be parsed.");
 
@@ -3878,8 +4379,14 @@ OScriptParser::OScriptParser() {
     bind_handlers();
 
     if (unlikely(valid_annotations.is_empty())) {
-        register_annotation(MethodInfo("@export"), AnnotationInfo::VARIABLE, &OScriptParser::export_annotations<PROPERTY_HINT_NONE, Variant::NIL>);
+        register_annotations();
     }
+
+    #ifdef DEBUG_ENABLED
+    for (int i = 0; i < OScriptWarning::WARNING_MAX; i++) {
+        warning_ignore_start_nodes[i] = INT_MAX;
+    }
+    #endif
 }
 
 OScriptParser::~OScriptParser() {

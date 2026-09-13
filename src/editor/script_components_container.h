@@ -16,6 +16,7 @@
 //
 #pragma once
 
+#include "editor/graph/graph_clipboard.h"
 #include "orchestration/orchestration.h"
 #include "script/script.h"
 
@@ -62,17 +63,23 @@ class OrchestratorScriptComponentsContainer : public ScrollContainer {
         SCRIPT_VARIABLE,
         SCRIPT_MACRO,
         SCRIPT_SIGNAL,
+        FUNCTION_LOCAL_VARIABLE,
         COMPONENT_MAX
     };
 
     Ref<Orchestration> _orchestration;
+    OrchestratorEditorGraphClipboard _clipboard;
 
     OrchestratorEditorComponentView* _graphs = nullptr;
     OrchestratorEditorComponentView* _functions = nullptr;
     OrchestratorEditorComponentView* _macros = nullptr;
     OrchestratorEditorComponentView* _variables = nullptr;
+    OrchestratorEditorComponentView* _local_variables = nullptr;
     OrchestratorEditorComponentView* _signals = nullptr;
     Button* _add_function_override = nullptr;
+
+    // Function of the active graph tab, scopes the local variables view
+    Ref<OScriptFunction> _active_function;
 
     bool _use_graph_friendly_names = false;
     bool _use_function_friendly_names = false;
@@ -86,6 +93,11 @@ class OrchestratorScriptComponentsContainer : public ScrollContainer {
 
     void _functions_changed();
     void _variables_changed();
+    void _local_variable_changed();
+    void _local_variable_added(const StringName& p_name);
+    void _local_variable_removed(const StringName& p_name);
+    void _local_variable_renamed(const StringName& p_old_name, const StringName& p_new_name);
+    void _set_active_function(const Ref<OScriptFunction>& p_function);
 
     void _open_graph(const String& p_graph_name);
     void _open_graph_with_focus(const String& p_graph_name, int p_node_id);
@@ -104,6 +116,13 @@ class OrchestratorScriptComponentsContainer : public ScrollContainer {
     void _component_add_item_commit(TreeItem* p_item);
     void _component_add_item_canceled(TreeItem* p_item);
     void _component_duplicate_item(TreeItem* p_item, const Dictionary& p_data);
+    void _component_promote_local_variable(TreeItem* p_item);
+    void _promote_local_variable(const StringName& p_name, bool p_avoid_shadowing);
+    void _component_copy_variable_as_local(TreeItem* p_item);
+    void _component_copy_item(TreeItem* p_item);
+    void _component_paste();
+    void _component_paste_conflicts_confirmed(Object* p_dialog);
+    void _component_paste_declarations(const Vector<OrchestratorEditorGraphClipboard::Resolution>& p_resolutions);
     void _component_rename_item(TreeItem* p_item);
     void _component_remove_item(TreeItem* p_item, bool p_confirm = true);
     void _component_focus_item(TreeItem* p_item);
@@ -112,10 +131,12 @@ class OrchestratorScriptComponentsContainer : public ScrollContainer {
     void _update_components(int p_component_type = COMPONENT_MAX);
     void _find_and_edit_function(const String& p_function_name);
     void _find_and_edit_variable(const String& p_variable_name);
+    void _find_and_edit_local_variable(const String& p_variable_name);
     void _update_graphs_and_functions();
     void _update_macros();
     void _save_category_state(TreeItem* p_item);
     void _update_variables();
+    void _update_local_variables();
     void _update_signals();
     void _update_slots();
     void _update_slot_item(TreeItem* p_item);
@@ -143,6 +164,7 @@ public:
     void update();
 
     void notify_graph_opened(OrchestratorEditorGraphPanel* p_graph);
+    void notify_active_graph_changed(const Ref<OScriptGraph>& p_graph);
 
     OrchestratorScriptComponentsContainer();
 };

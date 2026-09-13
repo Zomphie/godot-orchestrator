@@ -16,6 +16,7 @@
 //
 #pragma once
 
+#include "orchestration/annotation.h"
 #include "orchestration/nodes.h"
 #include "script/parser/parser_nodes.h"
 #include "script/parser/function_analyzer.h"
@@ -228,6 +229,7 @@ public:
 private:
     struct PendingWarning {
         const Node *source = nullptr;
+        const FunctionNode* function = nullptr;   // Function being analyzed when the warning was raised, if any
         OScriptWarning::Code code = OScriptWarning::WARNING_MAX;
         bool treated_as_error = false;
         Vector<String> symbols;
@@ -324,6 +326,12 @@ private:
     //              26: == END ==
     //
 
+    // Split pins
+    // A split input composes its value from its sub-pins; a sub-pin output reads a component of its root.
+    ExpressionNode* build_composed_input(const Ref<OScriptNodePin>& p_pin);
+    Ref<OScriptNodePin> get_split_root(const Ref<OScriptNodePin>& p_pin, Vector<String>& r_components);
+    ExpressionNode* wrap_components(ExpressionNode* p_base, const Vector<String>& p_components);
+
     // Inlines expressions as possible, should be used for expression nodes or arguments
     ExpressionNode* resolve_input(const Ref<OScriptNodePin>& p_pin);
     // Use for statements that need a named variable
@@ -356,7 +364,9 @@ private:
     ExpressionNode* build_deconstruct(const Ref<OScriptNodeDecompose>& p_node, const Ref<OScriptNodePin>& p_pin); // vars validated
     ExpressionNode* build_function_entry(const Ref<OScriptNodeFunctionEntry>& p_node, const Ref<OScriptNodePin>& p_pin); // vars validated
     ExpressionNode* build_pure_call(const Ref<OScriptNodeCallFunction>& p_node, const Ref<OScriptNodePin>& p_pin); // vars validated
-    ExpressionNode* build_get_local_variable(const Ref<OScriptNodeLocalVariable>& p_node, const Ref<OScriptNodePin>& p_pin);
+    ExpressionNode* build_local_variable_get(const Ref<OScriptNodeLocalVariableGet>& p_node, const Ref<OScriptNodePin>& p_pin);
+    ExpressionNode* build_local_variable_set_expression(const Ref<OScriptNodeLocalVariableSet>& p_node, const Ref<OScriptNodePin>& p_pin);
+    ExpressionNode* build_get_local_variable_legacy(const Ref<OScriptNodeLocalVariableLegacy>& p_node, const Ref<OScriptNodePin>& p_pin);
     ExpressionNode* build_make_dictionary(const Ref<OScriptNodeMakeDictionary>& p_node, const Ref<OScriptNodePin>& p_pin);
     ExpressionNode* build_make_array(const Ref<OScriptNodeMakeArray>& p_node, const Ref<OScriptNodePin>& p_pin); // vars validated
     ExpressionNode* build_array_get_at_index(const Ref<OScriptNodeArrayGet>& p_node, const Ref<OScriptNodePin>& p_pin);
@@ -378,7 +388,8 @@ private:
     StatementResult build_variable_get_validated(const Ref<OScriptNodeVariableGet>& p_script_node); // vars validated
     StatementResult build_variable_set(const Ref<OScriptNodeVariableSet>& p_script_node); // vars validated
     StatementResult build_property_set(const Ref<OScriptNodePropertySet>& p_script_node); // vars validated
-    StatementResult build_assign_local_variable(const Ref<OScriptNodeAssignLocalVariable>& p_script_node);
+    StatementResult build_local_variable_set(const Ref<OScriptNodeLocalVariableSet>& p_script_node);
+    StatementResult build_assign_local_variable_legacy(const Ref<OScriptNodeAssignLocalVariableLegacy>& p_script_node);
     StatementResult build_call_member_function(const Ref<OScriptNodeCallMemberFunction>& p_script_node); // vars validated
     StatementResult build_call_builtin_function(const Ref<OScriptNodeCallBuiltinFunction>& p_script_node); // vars validated
     StatementResult build_call_script_function(const Ref<OScriptNodeCallScriptFunction>& p_script_node); // vars_validated
@@ -423,8 +434,21 @@ private:
     SuiteNode* build_suite(const String& p_name, const Ref<OScriptNodePin>& p_source_pin, SuiteNode* p_suite = nullptr);
 
     // Annotations
+    // Synthesizes annotation nodes from the model's list onto the target, validating argument counts.
+    void build_annotations(Node* p_target, const Vector<OScriptAnnotation>& p_annotations, uint32_t p_target_kind);
+    // Pairs a registry descriptor name with its compile-time apply callback; null when none exists.
+    static AnnotationAction get_annotation_action(const StringName& p_name);
+    static uint32_t get_annotation_target_kinds(uint32_t p_registry_targets);
+    static void register_annotations();
+
     template <PropertyHint t_hint, Variant::Type t_type>
     bool export_annotations(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class);
+    bool export_storage_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class);
+    bool export_custom_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class);
+    bool export_tool_button_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class);
+    bool rpc_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class);
+    bool onready_annotation(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class);
+    bool warning_annotations(AnnotationNode* p_annotation, Node* p_target, ClassNode* p_class);
 
 public:
     Error parse(Orchestration* p_orchestration, const String& p_script_path);

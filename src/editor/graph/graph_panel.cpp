@@ -24,11 +24,13 @@
 #include "common/scene_utils.h"
 #include "common/settings.h"
 #include "common/string_utils.h"
+#include "common/variant_struct_schema.h"
 #include "common/variant_utils.h"
 #include "core/godot/config/project_settings_cache.h"
 #include "core/godot/core_string_names.h"
 #include "core/godot/scene_string_names.h"
 #include "editor/actions/filter_engine.h"
+#include "editor/actions/introspector.h"
 #include "editor/actions/menu.h"
 #include "editor/actions/registry.h"
 #include "editor/actions/rules/override_function_rule.h"
@@ -40,6 +42,7 @@
 #include "editor/graph/graph_pin.h"
 #include "editor/graph/nodes/comment_graph_frame.h"
 #include "editor/graph/nodes/reroute_graph_node.h"
+#include "editor/gui/clipboard_conflict_dialog.h"
 #include "editor/gui/context_menu.h"
 #include "editor/gui/dialogs_helper.h"
 #include "editor/settings/editor_settings.h"
@@ -181,22 +184,14 @@ void OrchestratorEditorGraphPanel::_node_deselected(Node* p_node) {
     }
 }
 
-template <typename T>
-static TypedArray<T> set_to_typed_array(const HashSet<T*>& p_set) {
-    TypedArray<T> results;
-    for (T* entry : p_set) {
-        results.push_back(entry);
-    }
-    return results;
-}
-
 void OrchestratorEditorGraphPanel::_delete_nodes_request(const PackedStringArray& p_names) {
     // In Godot 4.2, there is a case where this method can be called with no values
     if (p_names.is_empty()) {
         return;
     }
 
-    HashSet<OrchestratorEditorGraphNode*> node_set;
+    // Frames and nodes are confirmed and removed together; neither goes before the user answers.
+    PackedInt64Array node_ids;
     for (const String& name : p_names) {
         GraphElement* element = cast_to<GraphElement>(find_child(name, false, false));
         if (!element) {
@@ -204,17 +199,18 @@ void OrchestratorEditorGraphPanel::_delete_nodes_request(const PackedStringArray
         }
 
         if (OrchestratorEditorGraphFrame* frame = cast_to<OrchestratorEditorGraphFrame>(element)) {
-            remove_frame(frame, false);
+            if (frame->get_comment().is_valid()) {
+                node_ids.push_back(frame->get_comment()->get_id());
+            }
         } else if (OrchestratorEditorGraphNode* node = cast_to<OrchestratorEditorGraphNode>(element)) {
-            node_set.insert(node);
+            if (node->can_user_delete_node()) {
+                node_ids.push_back(node->get_id());
+            }
         }
     }
 
-    const uint32_t node_count = node_set.size();
-    const TypedArray<OrchestratorEditorGraphNode> node_array = set_to_typed_array(node_set);
-
-    if (node_count > 0) {
-        remove_nodes(node_array);
+    if (!node_ids.is_empty()) {
+        remove_nodes(node_ids);
     }
 }
 
@@ -244,8 +240,8 @@ void OrchestratorEditorGraphPanel::_connection_drag_ended() {
 }
 
 void OrchestratorEditorGraphPanel::_copy_nodes_request() {
-    const Vector<OrchestratorEditorGraphNode*> selected_nodes = get_selected<OrchestratorEditorGraphNode>();
-    if (!selected_nodes.is_empty() && !_can_duplicate_nodes(selected_nodes)) {
+    const Vector<Ref<OrchestrationGraphNode>> selected_nodes = _get_selected_model_nodes();
+    if (!selected_nodes.is_empty() && !_can_copy_nodes(selected_nodes)) {
         return;
     }
 
@@ -253,8 +249,8 @@ void OrchestratorEditorGraphPanel::_copy_nodes_request() {
 }
 
 void OrchestratorEditorGraphPanel::_cut_nodes_request() {
-    const Vector<OrchestratorEditorGraphNode*> selected = get_selected<OrchestratorEditorGraphNode>();
-    if (selected.is_empty() || !_can_duplicate_nodes(selected)) {
+    const Vector<Ref<OrchestrationGraphNode>> selected = _get_selected_model_nodes();
+    if (selected.is_empty() || !_can_copy_nodes(selected, true)) {
         return;
     }
 
@@ -263,13 +259,17 @@ void OrchestratorEditorGraphPanel::_cut_nodes_request() {
         return;
     }
 
-    for (OrchestratorEditorGraphNode* node : selected) {
-        remove_node(node, false);
+    // Only what reached the clipboard is removed; a node the copy refused must not be lost. The panel
+    // tears down each visual element in response to "node_removed", see _node_removed.
+    for (const Ref<OrchestrationGraphNode>& node : selected) {
+        if (result.added_nodes.has(node->get_id())) {
+            _graph->get_orchestration()->remove_node(node->get_id());
+        }
     }
 }
 
 void OrchestratorEditorGraphPanel::_duplicate_nodes_request() {
-    const Vector<OrchestratorEditorGraphNode*> selected = get_selected<OrchestratorEditorGraphNode>();
+    const Vector<Ref<OrchestrationGraphNode>> selected = _get_selected_model_nodes();
     if (selected.is_empty() || !_can_duplicate_nodes(selected)) {
         return;
     }
@@ -281,53 +281,57 @@ void OrchestratorEditorGraphPanel::_duplicate_nodes_request() {
 
     _set_edited(true);
     _refresh_panel_connections_with_model();
+    _restore_frame_attachments(result.added_nodes);
 
     emit_signal("nodes_changed");
 
-    clear_selections();
-
-    for (uint64_t node_id : result.added_nodes) {
-        find_node(node_id)->set_selected(true);
-    }
+    _select_elements(result.added_nodes);
 }
 
 void OrchestratorEditorGraphPanel::_paste_nodes_request() {
     const Vector2 offset = (get_scroll_offset() + get_local_mouse_position()) / get_zoom();
 
-    OrchestratorEditorGraphClipboard::ClipboardResult result = _clipboard.paste(
-        _graph, offset, is_snapping_enabled(), get_snapping_distance());
+    // Declarations that exist here with a different definition need the user's decision first.
+    // Local variables are checked against the function that owns this graph, if any.
+    const StringName function_name = _graph->get_flags().has_flag(OrchestrationGraph::GF_FUNCTION) ? _graph->get_graph_name() : StringName();
+    const Vector<OrchestratorEditorGraphClipboard::Conflict> conflicts = _clipboard.plan(_graph->get_orchestration(), function_name);
+    if (conflicts.is_empty()) {
+        _paste_nodes(offset, Vector<OrchestratorEditorGraphClipboard::Resolution>());
+        return;
+    }
 
-    if (result.added_nodes.is_empty()) {
+    OrchestratorEditorClipboardConflictDialog* dialog = memnew(OrchestratorEditorClipboardConflictDialog);
+    dialog->popup_conflicts(conflicts, callable_mp_this(_paste_conflicts_confirmed).bind(dialog, offset));
+}
+
+void OrchestratorEditorGraphPanel::_paste_conflicts_confirmed(Object* p_dialog, const Vector2& p_offset) {
+    OrchestratorEditorClipboardConflictDialog* dialog = cast_to<OrchestratorEditorClipboardConflictDialog>(p_dialog);
+    ERR_FAIL_NULL(dialog);
+
+    _paste_nodes(p_offset, dialog->get_resolutions());
+}
+
+void OrchestratorEditorGraphPanel::_paste_nodes(const Vector2& p_offset, const Vector<OrchestratorEditorGraphClipboard::Resolution>& p_resolutions) {
+    OrchestratorEditorGraphClipboard::ClipboardResult result = _clipboard.paste(
+        _graph, p_offset, is_snapping_enabled(), get_snapping_distance(), p_resolutions);
+
+    // A payload of declarations alone adds no nodes here, that is still a paste
+    if (result.is_empty()) {
         ORCHESTRATOR_ERROR("No nodes were pasted");
     }
 
     _refresh_panel_connections_with_model();
+    _restore_frame_attachments(result.added_nodes);
 
     emit_signal("nodes_changed");
 
-    clear_selections();
-
-    for (uint64_t node_id : result.added_nodes) {
-        find_node(node_id)->set_selected(true);
-    }
+    _select_elements(result.added_nodes);
 
     _set_edited(true);
 
-    if (result.had_skipped_nodes()) {
-        String message = "Several nodes were not pasted due to the following reasons:\n\n";
-        for (const KeyValue<StringName, String>& E : result.skipped_functions) {
-            message += "* Function " + E.key + ": " + E.value + "\n";
-        }
-        for (const KeyValue<StringName, String>& E : result.skipped_events) {
-            message += "* Event " + E.key + ": " + E.value + "\n";
-        }
-        for (const KeyValue<StringName, String>& E : result.skipped_variables) {
-            message += "* Variable " + E.key + ": " + E.value + "\n";
-        }
-        for (const KeyValue<StringName, String>& E : result.skipped_signals) {
-            message += "* Signal " + E.key + ": " + E.value + "\n";
-        }
-        ORCHESTRATOR_ERROR(message);
+    const String summary = result.get_summary();
+    if (!summary.is_empty()) {
+        OrchestratorEditorDialogs::accept(summary);
     }
 }
 
@@ -486,8 +490,9 @@ void OrchestratorEditorGraphPanel::_show_node_context_menu(OrchestratorEditorGra
     menu->add_shortcut(ED_GET_SHORTCUT("graph_editor/detach_from_frame"), callable_mp_this(_detach_node_from_frame).bind(p_node->get_name()), { .visible = parent_frame != nullptr });
 
     const bool can_expand = cast_to<OScriptNodeCallScriptFunction>(script_node.ptr()) != nullptr;
+    const bool can_collapse = cast_to<OScriptNodeEvent>(script_node.ptr()) == nullptr;
     menu->add_shortcut(ED_GET_SHORTCUT("graph_editor/expand_node"), callable_mp_this(_expand_node).bind(p_node), { .disabled = !can_expand });
-    menu->add_shortcut(ED_GET_SHORTCUT("graph_editor/collapse_to_function"), callable_mp_this(_collapse_selected_nodes_to_function));
+    menu->add_shortcut(ED_GET_SHORTCUT("graph_editor/collapse_to_function"), callable_mp_this(_collapse_selected_nodes_to_function), { .disabled = !can_collapse });
 
     // Distribution needs an interior node to move, and stacking needs a second node to place.
     const bool can_distribute = get_selection_count() > 2;
@@ -649,7 +654,8 @@ void OrchestratorEditorGraphPanel::_show_pin_context_menu(OrchestratorEditorGrap
         menu->add_item(label, callable_mp_this(_remove_node_pin).bind(p_pin));
     }
 
-    if (script_node->can_change_pin_type(p_pin->_pin)) {
+    // A sub-pin's type is fixed by its parent's component
+    if (!script_pin->is_sub_pin() && script_node->can_change_pin_type(p_pin->_pin)) {
         const Vector<Variant::Type> options = script_node->get_possible_pin_types(p_pin->_pin);
         if (!options.is_empty()) {
             OrchestratorEditorContextMenu* submenu = menu->add_submenu("Change Pin Type");
@@ -658,6 +664,22 @@ void OrchestratorEditorGraphPanel::_show_pin_context_menu(OrchestratorEditorGrap
                 submenu->add_item(label, callable_mp_this(_change_node_pin_type).bind(p_pin, option));
             }
         }
+    }
+
+    // Composite pins split into their components; a component recombines its parent
+    const bool is_composite = !script_pin->is_execution() && !script_pin->is_split() && script_pin->is_connectable()
+        && VariantStructSchema::is_composite(script_pin->get_type());
+    if (is_composite) {
+        const bool can_split = script_pin->can_split();
+        menu->add_item("Split Struct Pin", callable_mp_this(_split_node_pin).bind(p_pin),
+            { .disabled = !can_split, .tooltip = can_split ? String() : "Break this pin's link before splitting it." });
+    }
+    if (script_pin->is_sub_pin()) {
+        const Ref<OrchestrationGraphPin> parent = Ref<OrchestrationGraphPin>(script_pin->get_parent_pin());
+        const bool can_recombine = parent->can_recombine();
+        const String label = vformat("Recombine %s", StringUtils::default_if_empty(parent->get_label(), parent->get_component_name()).capitalize());
+        menu->add_item(label, callable_mp_this(_recombine_node_pin).bind(p_pin),
+            { .disabled = !can_recombine, .tooltip = can_recombine ? String() : "Break the links to every component before recombining." });
     }
 
     if (pin_connections.size() > 1) {
@@ -709,6 +731,7 @@ void OrchestratorEditorGraphPanel::_show_pin_context_menu(OrchestratorEditorGrap
     }
 
     menu->add_item("Promote to Variable", callable_mp_this(_promote_pin_to_variable).bind(p_pin), { .visible = _can_promote_pin_to_variable(p_pin) });
+    menu->add_item("Promote to Local Variable", callable_mp_this(_promote_pin_to_local_variable).bind(p_pin), { .visible = _can_promote_pin_to_local_variable(p_pin) });
     menu->add_item("Reset to Default Value", callable_mp_this(_reset_pin_to_generated_default_value).bind(p_pin), { .visible = !p_pin->is_execution() && pin_connections.is_empty() && p_pin->is_connectable() && p_pin->get_direction() == PD_Input });
 
     menu->add_separator("Documentation");
@@ -743,7 +766,7 @@ void OrchestratorEditorGraphPanel::_node_added(int p_node_id) {
 }
 
 void OrchestratorEditorGraphPanel::_node_removed(int p_node_id) {
-    if (find_node(p_node_id)) {
+    if (find<GraphElement>(itos(p_node_id))) {
         _remove_node_from_panel(p_node_id);
 
         // This makes sure that we only ever emit 1 event during bulk node removal
@@ -766,11 +789,6 @@ void OrchestratorEditorGraphPanel::_graph_changed() {
     if (_graph.is_valid() && _graph->get_graph_name() != get_name()) {
         set_name(_graph->get_graph_name());
     }
-}
-
-
-void OrchestratorEditorGraphPanel::_clear_copy_buffer() {
-    _clipboard.clear();
 }
 
 void OrchestratorEditorGraphPanel::_toggle_resizer_for_selected_nodes() {
@@ -813,14 +831,17 @@ void OrchestratorEditorGraphPanel::_expand_node(OrchestratorEditorGraphNode* p_n
         ORCHESTRATOR_ERROR(vformat("Function the node references cannot be found."));
     }
 
+    const Ref<OrchestrationGraph> function_graph = function->get_function_graph();
+    if (!function_graph.is_valid()) {
+        ORCHESTRATOR_ERROR(vformat("Function graph cannot be found."));
+    }
+
     Rect2 nodes_area;
     HashSet<int> nodes_to_duplicate;
-    const Ref<OrchestrationGraph> function_graph = function->get_function_graph();
     for (const Ref<OrchestrationGraphNode>& node : function_graph->get_nodes()) {
-        const Ref<OScriptNodeFunctionEntry> entry = node;
         const Ref<OScriptNodeFunctionResult> result = node;
 
-        if (!entry.is_valid() && !result.is_valid() && node->can_duplicate()) {
+        if (!result.is_valid() && node->can_duplicate()) {
             const Rect2 node_rect = Rect2(node->get_position(), node->get_size());
             if (nodes_to_duplicate.is_empty()) {
                 nodes_area = node_rect;
@@ -834,12 +855,14 @@ void OrchestratorEditorGraphPanel::_expand_node(OrchestratorEditorGraphNode* p_n
     if (!nodes_to_duplicate.is_empty()) {
         const Vector2 position_delta = p_node->get_graph_rect().get_center() - nodes_area.get_center();
 
-        HashMap<int, int> connection_remap;
+        HashMap<uint64_t, uint64_t> connection_remap;
+        HashSet<uint64_t> added_nodes;
         for (const int node_id : nodes_to_duplicate) {
             const Ref<OrchestrationGraphNode> new_node = _graph->duplicate_node(node_id, position_delta, true);
             ERR_CONTINUE(!new_node.is_valid());
 
             connection_remap[node_id] = new_node->get_id();
+            added_nodes.insert(new_node->get_id());
         }
 
         for (const Connection& C : _graph->get_orchestration()->get_connections()) {
@@ -851,11 +874,25 @@ void OrchestratorEditorGraphPanel::_expand_node(OrchestratorEditorGraphNode* p_n
         // Makes sure that if a PromotableOperator node has any connections that are duplicated, the pin types
         // from the original node are restored.
         for (int old_node_id : nodes_to_duplicate) {
+            if (!connection_remap.has(old_node_id)) {
+                continue;
+            }
+
             const int new_node_id = connection_remap[old_node_id];
             const Ref<OrchestrationGraphNode> new_node = _graph->get_orchestration()->get_node(new_node_id);
             const Ref<OrchestrationGraphNode> old_node = _graph->get_orchestration()->get_node(old_node_id);
             OScriptNodePromotableOperator::copy_pin_types(old_node, new_node);
         }
+
+        // Expanded comments still reference the function graph's node ids
+        for (const uint64_t node_id : added_nodes) {
+            const Ref<OScriptNodeComment> comment = _graph->get_orchestration()->get_node(node_id);
+            if (comment.is_valid()) {
+                comment->remap_attached_nodes(connection_remap);
+            }
+        }
+
+        _restore_frame_attachments(added_nodes);
     }
 
     remove_node(p_node, false);
@@ -868,7 +905,9 @@ void OrchestratorEditorGraphPanel::_collapse_selected_nodes_to_function() {
         return;
     }
 
-    if (!_can_duplicate_nodes(selected_nodes)) {
+    const Vector<OrchestratorEditorGraphFrame*> selected_frames = get_selected<OrchestratorEditorGraphFrame>();
+    const Vector<Ref<OrchestrationGraphNode>> selected_model_nodes = _get_selected_model_nodes();
+    if (!_can_duplicate_nodes(selected_model_nodes)) {
         return;
     }
 
@@ -929,7 +968,10 @@ void OrchestratorEditorGraphPanel::_collapse_selected_nodes_to_function() {
     const Ref<OrchestrationGraph> source_graph = _graph;
     const Ref<OrchestrationGraph> target_graph = function->get_function_graph();
 
-    const Rect2 selected_node_area = get_bounds_for_nodes(selected_nodes);
+    Rect2 selected_node_area = get_bounds_for_nodes(selected_nodes);
+    for (OrchestratorEditorGraphFrame* frame : selected_frames) {
+        selected_node_area = selected_node_area.merge(Rect2(frame->get_position_offset(), frame->get_size()));
+    }
 
     // Before moving the nodes, their connections to non-collapsed nodes must be severed
     for (uint64_t connection_id : input_connections) {
@@ -942,9 +984,30 @@ void OrchestratorEditorGraphPanel::_collapse_selected_nodes_to_function() {
         source_graph->unlink(C.from_node, C.from_port, C.to_node, C.to_port);
     }
 
-    // Transfer the nodes between the graphs
-    for (OrchestratorEditorGraphNode* node : selected_nodes) {
-        source_graph->move_node_to(node->_node, target_graph);
+    // Tearing an attached node out of this panel re-saves its frame's attachments from what remains.
+    // This would strip the very nodes travelling with the frame. Snapshot, restore next.
+    HashMap<int, PackedInt64Array> frame_attachments;
+    for (OrchestratorEditorGraphFrame* frame : selected_frames) {
+        const Ref<OScriptNodeComment> comment = frame->get_comment();
+        if (comment.is_valid()) {
+            frame_attachments[comment->get_id()] = comment->get_attached_nodes();
+        }
+    }
+
+    // Transfer the nodes and frames between the graphs
+    HashSet<int> moved_ids;
+    for (const Ref<OrchestrationGraphNode>& node : selected_model_nodes) {
+        moved_ids.insert(node->get_id());
+        source_graph->move_node_to(node, target_graph);
+    }
+
+    // Only attachments that made the trip remain valid in the target graph
+    for (const KeyValue<int, PackedInt64Array>& E : frame_attachments) {
+        const Ref<OScriptNodeComment> comment = target_graph->get_node(E.key);
+        if (comment.is_valid()) {
+            comment->set_attached_nodes(E.value);
+            comment->retain_attached_nodes(moved_ids);
+        }
     }
 
     // Reapply connections in new graph
@@ -953,8 +1016,8 @@ void OrchestratorEditorGraphPanel::_collapse_selected_nodes_to_function() {
         const Ref<OrchestrationGraphNode> source_node = target_graph->get_node(C.from_node);
         const Ref<OrchestrationGraphNode> target_node = target_graph->get_node(C.to_node);
         if (source_node.is_valid() && target_node.is_valid()) {
-            const Ref<OrchestrationGraphPin> source_pin = source_node->find_pin(C.from_port, PD_Output);
-            const Ref<OrchestrationGraphPin> target_pin = target_node->find_pin(C.to_port, PD_Input);
+            const Ref<OrchestrationGraphPin> source_pin = source_node->find_slot_pin(static_cast<int>(C.from_port), PD_Output);
+            const Ref<OrchestrationGraphPin> target_pin = target_node->find_slot_pin(static_cast<int>(C.to_port), PD_Input);
             if (source_pin.is_valid() && target_pin.is_valid()) {
                 source_pin->link(target_pin);
             }
@@ -978,7 +1041,7 @@ void OrchestratorEditorGraphPanel::_collapse_selected_nodes_to_function() {
         const Connection C(connection_id);
 
         const Ref<OrchestrationGraphNode> source = _graph->get_orchestration()->get_node(C.from_node);
-        const Ref<OrchestrationGraphPin> source_pin = source->find_pins(PD_Output)[C.from_port];
+        const Ref<OrchestrationGraphPin> source_pin = source->find_slot_pin(static_cast<int>(C.from_port), PD_Output);
         if (source_pin->is_execution() && !call_execution_wired) {
             source_graph->link(C.from_node, C.from_port, call_function->get_id(), 0);
             call_execution_wired = true;
@@ -987,7 +1050,7 @@ void OrchestratorEditorGraphPanel::_collapse_selected_nodes_to_function() {
         }
 
         const Ref<OrchestrationGraphNode> target = _graph->get_orchestration()->get_node(C.to_node);
-        const Ref<OrchestrationGraphPin> target_pin = target->find_pins(PD_Input)[C.to_port];
+        const Ref<OrchestrationGraphPin> target_pin = target->find_slot_pin(static_cast<int>(C.to_port), PD_Input);
 
         if (!entry_positioned) {
             const Ref<OrchestrationGraphNode> entry = _graph->get_orchestration()->get_node(function->get_owning_node_id());
@@ -1037,7 +1100,7 @@ void OrchestratorEditorGraphPanel::_collapse_selected_nodes_to_function() {
             const Connection C(connection_id);
 
             const Ref<OrchestrationGraphNode> source = _graph->get_orchestration()->get_node(C.from_node);
-            const Ref<OrchestrationGraphPin> source_pin = source->find_pins(PD_Output)[C.from_port];
+            const Ref<OrchestrationGraphPin> source_pin = source->find_slot_pin(static_cast<int>(C.from_port), PD_Output);
 
             if (!positioned) {
                 result->set_position(source->get_position() + Vector2(250, 0));
@@ -1081,7 +1144,7 @@ void OrchestratorEditorGraphPanel::_collapse_selected_nodes_to_function() {
 
         // Get the exterior node connected to the selected node
         const Ref<OrchestrationGraphNode> target = _graph->get_orchestration()->get_node(C.to_node);
-        const Ref<OrchestrationGraphPin> target_pin = target->find_pins(PD_Input)[C.to_port];
+        const Ref<OrchestrationGraphPin> target_pin = target->find_slot_pin(static_cast<int>(C.to_port), PD_Input);
         if (target_pin->is_execution() && !call_execution_wired) {
             source_graph->link(call_function->get_id(), 0, C.to_node, C.to_port);
             call_execution_wired = true;
@@ -1223,6 +1286,31 @@ Vector<OrchestratorEditorGraphNode*> OrchestratorEditorGraphPanel::_get_selected
         nodes.sort_custom<GraphNodeVerticalPositionSort>();
     }
     return nodes;
+}
+
+Vector<Ref<OrchestrationGraphNode>> OrchestratorEditorGraphPanel::_get_selected_model_nodes() {
+    Vector<Ref<OrchestrationGraphNode>> nodes;
+    for (OrchestratorEditorGraphNode* node : get_selected<OrchestratorEditorGraphNode>()) {
+        if (node->_node.is_valid()) {
+            nodes.push_back(node->_node);
+        }
+    }
+    for (OrchestratorEditorGraphFrame* frame : get_selected<OrchestratorEditorGraphFrame>()) {
+        if (frame->get_comment().is_valid()) {
+            nodes.push_back(frame->get_comment());
+        }
+    }
+    return nodes;
+}
+
+void OrchestratorEditorGraphPanel::_select_elements(const HashSet<uint64_t>& p_node_ids) {
+    clear_selections();
+
+    for (const uint64_t node_id : p_node_ids) {
+        if (GraphElement* element = find<GraphElement>(itos(node_id))) {
+            element->set_selected(true);
+        }
+    }
 }
 
 void OrchestratorEditorGraphPanel::_align_nodes(OrchestratorEditorGraphNode* p_anchor, int p_alignment) {
@@ -1508,11 +1596,85 @@ void OrchestratorEditorGraphPanel::_promote_pin_to_variable(OrchestratorEditorGr
     }
 }
 
+bool OrchestratorEditorGraphPanel::_can_promote_pin_to_local_variable(OrchestratorEditorGraphPin* p_pin) {
+    ERR_FAIL_NULL_V(p_pin, false);
+    return !p_pin->is_execution() && _graph->get_flags().has_flag(OrchestrationGraph::GF_FUNCTION);
+}
+
+void OrchestratorEditorGraphPanel::_promote_pin_to_local_variable(OrchestratorEditorGraphPin* p_pin) {
+    ERR_FAIL_NULL_MSG(p_pin, "Cannot promote pin to a local variable with an invalid pin reference");
+    ERR_FAIL_COND_MSG(!_can_promote_pin_to_local_variable(p_pin), "Pin is not eligible for promotion to local variable");
+
+    const Ref<OScriptFunction> function = _graph->get_orchestration()->find_function(_graph->get_graph_name());
+    ERR_FAIL_COND_MSG(!function.is_valid(), "Cannot promote pin, the graph has no function");
+
+    int index = 0;
+    String name = vformat("%s_%d", p_pin->get_pin_name(), index++);
+    while (!function->is_local_variable_name_available(name)) {
+        name = vformat("%s_%d", p_pin->get_pin_name(), index++);
+    }
+
+    const Ref<OScriptLocalVariable> local_variable = function->create_local_variable(name);
+    if (local_variable.is_valid()) {
+        const bool is_input = p_pin->get_direction() == PD_Input;
+        const Vector2 port_offset = p_pin->get_graph_node()->get_port_position_for_pin(p_pin);
+        const Vector2 pin_position = p_pin->get_graph_node()->get_position_offset() + port_offset;
+
+        local_variable->set_info(p_pin->get_property_info());
+        local_variable->set_default_value(p_pin->_pin->get_effective_default_value());
+
+        NodeSpawnOptions options;
+        options.context.variable_name = local_variable->get_variable_name();
+        options.context.function_name = function->get_function_name();
+        options.position = pin_position + Vector2(250, 0) * (is_input ? -1 : 1);
+
+        if (is_input) {
+            OrchestratorEditorGraphNode* node = spawn_node<OScriptNodeLocalVariableGet>(options).node;
+            if (node) {
+                link(node->get_output_pin(0), p_pin);
+            }
+        } else {
+            OrchestratorEditorGraphNode* node = spawn_node<OScriptNodeLocalVariableSet>(options).node;
+            if (node) {
+                link(node->get_input_pin(1), p_pin);
+            }
+        }
+
+        _set_edited(true);
+    }
+}
+
 void OrchestratorEditorGraphPanel::_reset_pin_to_generated_default_value(OrchestratorEditorGraphPin* p_pin) {
     ERR_FAIL_NULL_MSG(p_pin, "Cannot reset pin to generated default value with an invalid pin reference");
 
     p_pin->_pin->set_default_value(p_pin->_pin->get_generated_default_value());
     _set_edited(true);
+}
+
+void OrchestratorEditorGraphPanel::_split_node_pin(OrchestratorEditorGraphPin* p_pin) {
+    ERR_FAIL_NULL_MSG(p_pin, "Cannot split an invalid pin reference");
+
+    // The node rebuilds its widgets on change, which frees the pin widget; keep only the node
+    OrchestratorEditorGraphNode* graph_node = p_pin->get_graph_node();
+    const Ref<OrchestrationGraphNode> script_node = graph_node->_node;
+    if (script_node.is_valid() && script_node->split_pin(p_pin->_pin)) {
+        _set_edited(true);
+    }
+
+    // This shrinks the node when widget layouts change
+    graph_node->set_anchor_and_offset(SIDE_BOTTOM, 0, 0);
+}
+
+void OrchestratorEditorGraphPanel::_recombine_node_pin(OrchestratorEditorGraphPin* p_pin) {
+    ERR_FAIL_NULL_MSG(p_pin, "Cannot recombine an invalid pin reference");
+
+    OrchestratorEditorGraphNode* graph_node = p_pin->get_graph_node();
+    const Ref<OrchestrationGraphNode> script_node = graph_node->_node;
+    if (script_node.is_valid() && script_node->recombine_pin(p_pin->_pin)) {
+        _set_edited(true);
+    }
+
+    graph_node->set_anchor_and_offset(SIDE_BOTTOM, 0, 0);
 }
 
 void OrchestratorEditorGraphPanel::_view_documentation(const String& p_topic) {
@@ -1638,19 +1800,36 @@ void OrchestratorEditorGraphPanel::_save_frame_attachments(OrchestratorEditorGra
 
 void OrchestratorEditorGraphPanel::_restore_frame_attachments() {
     for_each<OrchestratorEditorGraphFrame>([&](OrchestratorEditorGraphFrame* frame) {
-        const Ref<OScriptNodeComment> comment = frame->get_comment();
-        if (comment.is_null()) {
-            return;
-        }
-
-        const PackedInt64Array attached_ids = comment->get_attached_nodes();
-        for (int i = 0; i < attached_ids.size(); i++) {
-            const StringName node_name = itos(attached_ids[i]);
-            attach_graph_element_to_frame(node_name, frame->get_name());
-        }
-
-        frame->update_placeholder(attached_ids.size() > 0);
+        _restore_frame_attachments(frame);
     });
+}
+
+void OrchestratorEditorGraphPanel::_restore_frame_attachments(OrchestratorEditorGraphFrame* p_frame) {
+    GUARD_NULL(p_frame);
+
+    const Ref<OScriptNodeComment> comment = p_frame->get_comment();
+    if (comment.is_null()) {
+        return;
+    }
+
+    int attached_count = 0;
+    for (const int64_t attached_id : comment->get_attached_nodes()) {
+        const StringName node_name = itos(attached_id);
+        if (find<GraphElement>(node_name)) {
+            attach_graph_element_to_frame(node_name, p_frame->get_name());
+            attached_count++;
+        }
+    }
+
+    p_frame->update_placeholder(attached_count > 0);
+}
+
+void OrchestratorEditorGraphPanel::_restore_frame_attachments(const HashSet<uint64_t>& p_node_ids) {
+    for (const uint64_t node_id : p_node_ids) {
+        if (OrchestratorEditorGraphFrame* frame = find_frame(itos(node_id))) {
+            _restore_frame_attachments(frame);
+        }
+    }
 }
 
 void OrchestratorEditorGraphPanel::_spawn_frame() {
@@ -1758,10 +1937,22 @@ void OrchestratorEditorGraphPanel::_connect_with_menu(const PinHandle& p_handle,
     }
 
     if (actions.is_empty()) {
-        actions = action_registry->get_actions(source_script);
+        actions = _get_script_actions();
     }
 
     menu->popup(p_position + get_screen_position(), actions, filter_engine);
+}
+
+OrchestratorEditorActionSet OrchestratorEditorGraphPanel::_get_script_actions() const {
+    OrchestratorEditorActionSet actions = OrchestratorEditorActionRegistry::get_singleton()->get_actions(_graph->get_orchestration()->as_script());
+
+    // Local variables are scoped to the function whose graph this is
+    if (_graph->get_flags().has_flag(OrchestrationGraph::GF_FUNCTION)) {
+        const Ref<OScriptFunction> function = _graph->get_orchestration()->find_function(_graph->get_graph_name());
+        OrchestratorEditorIntrospector::generate_actions_from_function(function, actions);
+    }
+
+    return actions;
 }
 
 void OrchestratorEditorGraphPanel::_popup_menu(const Vector2& p_position) {
@@ -1798,10 +1989,7 @@ void OrchestratorEditorGraphPanel::_popup_menu(const Vector2& p_position) {
     menu->connect("action_selected", callable_mp_this(_action_menu_selection));
     menu->connect(SceneStringName(canceled), callable_mp_this(_action_menu_canceled));
 
-    menu->popup(
-        p_position + get_screen_position(),
-        OrchestratorEditorActionRegistry::get_singleton()->get_actions(_graph->get_orchestration()->as_script()),
-        filter_engine);
+    menu->popup(p_position + get_screen_position(), _get_script_actions(), filter_engine);
 }
 
 void OrchestratorEditorGraphPanel::_action_menu_selection(const Ref<OrchestratorEditorActionDefinition>& p_action) {
@@ -1884,6 +2072,13 @@ void OrchestratorEditorGraphPanel::_action_menu_selection(const Ref<Orchestrator
         case OrchestratorEditorActionDefinition::ACTION_EVENT: {
             ERR_FAIL_COND_MSG(!p_action->method.has_value(), "Handle event has no method");
 
+            // Events live in event graphs only. This panel cannot see other graphs, so the owning
+            // editor resolves the event graph and spawns there, see script_editor_view.
+            if (!_graph->get_flags().has_flag(OrchestrationGraph::GF_EVENT)) {
+                emit_signal("event_spawn_requested", DictionaryUtils::from_method(p_action->method.value()));
+                break;
+            }
+
             NodeSpawnOptions options;
             options.node_class = OScriptNodeEvent::get_class_static();
             options.context.method = p_action->method;
@@ -1940,6 +2135,24 @@ void OrchestratorEditorGraphPanel::_action_menu_selection(const Ref<Orchestrator
             NodeSpawnOptions options;
             options.node_class = OScriptNodeVariableSet::get_class_static();
             options.context.variable_name = p_action->property.value().name;
+            options.position = spawn_position;
+            options.drag_pin = _drag_from_pin;
+
+            spawn_node(options);
+            break;
+        }
+        case OrchestratorEditorActionDefinition::ACTION_LOCAL_VARIABLE_GET:
+        case OrchestratorEditorActionDefinition::ACTION_LOCAL_VARIABLE_SET: {
+            ERR_FAIL_COND_MSG(!p_action->property.has_value(), "Local variable action has no property");
+
+            const bool setter = p_action->type == OrchestratorEditorActionDefinition::ACTION_LOCAL_VARIABLE_SET;
+
+            NodeSpawnOptions options;
+            options.node_class = setter
+                ? OScriptNodeLocalVariableSet::get_class_static()
+                : OScriptNodeLocalVariableGet::get_class_static();
+            options.context.variable_name = p_action->property.value().name;
+            options.context.function_name = _graph->get_graph_name();
             options.position = spawn_position;
             options.drag_pin = _drag_from_pin;
 
@@ -2022,11 +2235,26 @@ bool OrchestratorEditorGraphPanel::_is_delete_confirmation_enabled() {
     return ORCHESTRATOR_GET("interface/editor/graph/confirm_on_delete", true);
 }
 
-bool OrchestratorEditorGraphPanel::_can_duplicate_nodes(const Vector<OrchestratorEditorGraphNode*>& p_nodes, bool p_error_dialog) {
-    for (OrchestratorEditorGraphNode* node : p_nodes) {
-        if (!node->_node->can_duplicate()) {
+bool OrchestratorEditorGraphPanel::_can_duplicate_nodes(const Vector<Ref<OrchestrationGraphNode>>& p_nodes, bool p_error_dialog) {
+    for (const Ref<OrchestrationGraphNode>& node : p_nodes) {
+        if (node.is_valid() && !node->can_duplicate()) {
             if (p_error_dialog) {
-                const String message = vformat("Cannot duplicate node '%s' with ID %d", node->get_title(), node->get_id());
+                const String message = vformat("Cannot duplicate node '%s' with ID %d", node->get_node_title(), node->get_id());
+                OrchestratorEditorDialogs::error(message);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool OrchestratorEditorGraphPanel::_can_copy_nodes(const Vector<Ref<OrchestrationGraphNode>>& p_nodes, bool p_cut, bool p_error_dialog) {
+    for (const Ref<OrchestrationGraphNode>& node : p_nodes) {
+        if (node.is_valid() && !node->can_copy()) {
+            if (p_error_dialog) {
+                // The whole operation is refused, the message says so rather than reading as a per-node warning
+                const String message = vformat("Nothing was %s. Node '%s' with ID %d cannot be placed on the clipboard.",
+                    p_cut ? "cut" : "copied", node->get_node_title(), node->get_id());
                 OrchestratorEditorDialogs::error(message);
             }
             return false;
@@ -2259,6 +2487,20 @@ void OrchestratorEditorGraphPanel::_add_node_to_panel(const Ref<OrchestrationGra
 }
 
 void OrchestratorEditorGraphPanel::_remove_node_from_panel(int p_node_id) {
+    if (OrchestratorEditorGraphFrame* frame = find_frame(itos(p_node_id))) {
+        if (frame->is_selected()) {
+            frame->set_selected(false);
+        }
+
+        _detach_node_from_frame(frame->get_name());
+
+        // Leave the tree now rather than on queue_free so GraphEdit drops its attachment bookkeeping
+        // for this frame immediately; elements torn down afterwards must not find it as their parent.
+        remove_child(frame);
+        frame->queue_free();
+        return;
+    }
+
     OrchestratorEditorGraphNode* graph_node = find_node(p_node_id);
     if (!graph_node) {
         return;
@@ -2273,6 +2515,11 @@ void OrchestratorEditorGraphPanel::_remove_node_from_panel(int p_node_id) {
 
     _detach_node_from_frame(graph_node->get_name());
 
+    // Leave the tree now rather than on queue_free. UI nodes are named by model id, and a model operation may
+    // replace a node with another of the same id in the same frame (see Orchestration::_replace_node); the
+    // newcomer would otherwise be renamed to avoid the dying sibling and the connection refresh would bind
+    // to the wrong one.
+    remove_child(graph_node);
     graph_node->queue_free();
 }
 
@@ -2423,6 +2670,18 @@ void OrchestratorEditorGraphPanel::_drop_data_property(const Dictionary& p_prope
     spawn_node(options);
 }
 
+void OrchestratorEditorGraphPanel::_drop_data_local_variable(const String& p_name, const Vector2& p_at_position, bool p_setter) {
+    NodeSpawnOptions options;
+    options.node_class = p_setter
+        ? OScriptNodeLocalVariableSet::get_class_static()
+        : OScriptNodeLocalVariableGet::get_class_static();
+    options.context.variable_name = p_name;
+    options.context.function_name = _graph->get_graph_name();
+    options.position = p_at_position;
+
+    spawn_node(options);
+}
+
 void OrchestratorEditorGraphPanel::_drop_data_variable(const String& p_name, const Vector2& p_at_position, bool p_validated, bool p_setter) {
     const String node_class_type = p_setter
         ? OScriptNodeVariableSet::get_class_static()
@@ -2511,8 +2770,8 @@ void OrchestratorEditorGraphPanel::_create_connection_reroute(const Dictionary& 
     ERR_FAIL_NULL_MSG(source_graph_node, "Cannot insert reroute: source graph node not found.");
     ERR_FAIL_NULL_MSG(target_graph_node, "Cannot insert reroute: target graph node not found.");
 
-    OrchestratorEditorGraphPin* source_pin = source_graph_node->get_output_pin(connection.from_port);
-    OrchestratorEditorGraphPin* target_pin = target_graph_node->get_input_pin(connection.to_port);
+    OrchestratorEditorGraphPin* source_pin = source_graph_node->get_port_pin(static_cast<int32_t>(connection.from_port), PD_Output);
+    OrchestratorEditorGraphPin* target_pin = target_graph_node->get_port_pin(static_cast<int32_t>(connection.to_port), PD_Input);
     ERR_FAIL_NULL_MSG(source_pin, "Cannot insert reroute: source pin not found.");
     ERR_FAIL_NULL_MSG(target_pin, "Cannot insert reroute: target pin not found.");
 
@@ -2564,8 +2823,8 @@ void OrchestratorEditorGraphPanel::_dissolve_selected_reroutes() {
             OrchestratorEditorGraphNode* source_node = find_node(static_cast<int>(incoming.from_node));
             OrchestratorEditorGraphNode* target_node = find_node(static_cast<int>(outgoing.to_node));
             if (source_node && target_node) {
-                OrchestratorEditorGraphPin* source_pin = source_node->get_output_pin(static_cast<int>(incoming.from_port));
-                OrchestratorEditorGraphPin* target_pin = target_node->get_input_pin(static_cast<int>(outgoing.to_port));
+                OrchestratorEditorGraphPin* source_pin = source_node->get_port_pin(static_cast<int32_t>(incoming.from_port), PD_Output);
+                OrchestratorEditorGraphPin* target_pin = target_node->get_port_pin(static_cast<int32_t>(outgoing.to_port), PD_Input);
                 if (source_pin && target_pin) {
                     link(source_pin, target_pin);
                 }
@@ -2868,7 +3127,7 @@ void OrchestratorEditorGraphPanel::_gui_input(const Ref<InputEvent>& p_event) {
 bool OrchestratorEditorGraphPanel::_can_drop_data(const Vector2& p_at_position, const Variant& p_data) const {
     // Widget types that can be dropped
     static PackedStringArray allowed_types = Array::make(
-        "files", "obj_property", "nodes", "function", "variable", "signal");
+        "files", "obj_property", "nodes", "function", "variable", "signal", "local_variable");
 
     if (p_data.get_type() != Variant::DICTIONARY) {
         return false;
@@ -2895,6 +3154,18 @@ bool OrchestratorEditorGraphPanel::_can_drop_data(const Vector2& p_at_position, 
                 _show_drag_hint("Use Shift to drop a Getter variable node");
             }
         }
+    } else if (drop_type == "local_variable") {
+        // A local variable can only be dropped into the graph of the function that declares it
+        if (!_graph->get_flags().has_flag(OrchestrationGraph::GF_FUNCTION)) {
+            return false;
+        }
+
+        const String function_name = data.get("function", "");
+        if (function_name != String(_graph->get_graph_name())) {
+            return false;
+        }
+
+        _show_drag_hint("Use Ctrl to drop a Setter, Shift to drop a Getter local variable node");
     }
 
     return true;
@@ -3054,6 +3325,38 @@ void OrchestratorEditorGraphPanel::_drop_data(const Vector2& p_at_position, cons
             menu->set_position(popup_position);
             menu->popup();
         }
+    } else if (drop_type == "local_variable") {
+        const Array& variables = data["variables"];
+        if (variables.is_empty()) {
+            return;
+        }
+
+        const Ref<OScriptFunction> function = _graph->get_orchestration()->find_function(_graph->get_graph_name());
+        if (!function.is_valid()) {
+            return;
+        }
+
+        const String variable_name = variables[0];
+        if (!function->has_local_variable(variable_name)) {
+            return;
+        }
+
+        if (Input::get_singleton()->is_key_pressed(KEY_CTRL)) {
+            _drop_data_local_variable(variable_name, spawn_position, true);
+        } else if (Input::get_singleton()->is_key_pressed(KEY_SHIFT)) {
+            _drop_data_local_variable(variable_name, spawn_position, false);
+        } else {
+            OrchestratorEditorContextMenu* menu = OrchestratorEditorContextMenu::create(this);
+
+            menu->add_separator("Local Variable " + variable_name);
+            menu->add_item("Get " + variable_name, callable_mp_this(_drop_data_local_variable)
+                .bind(variable_name, spawn_position, false));
+            menu->add_item("Set " + variable_name, callable_mp_this(_drop_data_local_variable)
+                .bind(variable_name, spawn_position, true));
+
+            menu->set_position(popup_position);
+            menu->popup();
+        }
     } else if (drop_type == "signal") {
         NodeSpawnOptions options;
         options.node_class = OScriptNodeEmitSignal::get_class_static();
@@ -3103,13 +3406,13 @@ bool OrchestratorEditorGraphPanel::_is_node_hover_valid(const StringName& p_from
     OrchestratorEditorGraphNode* source = find_node(p_from_node);
     ERR_FAIL_NULL_V_MSG(source, false, "Failed to locate source node with name " + p_from_node);
 
-    OrchestratorEditorGraphPin* source_pin = source->get_output_pin(p_from_port);
+    OrchestratorEditorGraphPin* source_pin = source->get_port_pin(p_from_port, PD_Output);
     ERR_FAIL_NULL_V_MSG(source_pin, false, "Failed to locate source node pin at port " + itos(p_from_port));
 
     OrchestratorEditorGraphNode* target = find_node(p_to_node);
     ERR_FAIL_NULL_V_MSG(target, false, "Failed to locate target node with name " + p_to_node);
 
-    OrchestratorEditorGraphPin* target_pin = target->get_input_pin(p_to_port);
+    OrchestratorEditorGraphPin* target_pin = target->get_port_pin(p_to_port, PD_Input);
     ERR_FAIL_NULL_V_MSG(target_pin, false, "Failed to locate target node pin at port " + itos(p_to_port));
 
     return target_pin->_pin->can_accept(source_pin->_pin);
@@ -3395,33 +3698,32 @@ void OrchestratorEditorGraphPanel::remove_node(OrchestratorEditorGraphNode* p_no
     _graph->get_orchestration()->remove_node(p_node->get_id());
 }
 
-void OrchestratorEditorGraphPanel::remove_nodes(const TypedArray<OrchestratorEditorGraphNode>& p_nodes, bool p_confirm) {
-    if (p_confirm && _is_delete_confirmation_enabled()) {
-        ORCHESTRATOR_CONFIRM(vformat("Do you wish to delete %d node(s)?", p_nodes.size()),
-            callable_mp_this(remove_nodes).bind(p_nodes, false));
+void OrchestratorEditorGraphPanel::remove_nodes(const PackedInt64Array& p_node_ids, bool p_confirm) {
+    if (p_node_ids.is_empty()) {
+        return;
     }
 
-    for (int i = 0; i < p_nodes.size(); i++) {
-        OrchestratorEditorGraphNode* node = cast_to<OrchestratorEditorGraphNode>(p_nodes[i]);
-        if (node && node->can_user_delete_node()) {
-            remove_node(node, false);
-        }
+    if (p_confirm && _is_delete_confirmation_enabled()) {
+        ORCHESTRATOR_CONFIRM(vformat("Do you wish to delete %d node(s)?", p_node_ids.size()),
+            callable_mp_this(remove_nodes).bind(p_node_ids, false));
+    }
+
+    // The panel tears down each visual node or frame in response to "node_removed", see _node_removed.
+    for (const int64_t node_id : p_node_ids) {
+        _graph->get_orchestration()->remove_node(node_id);
     }
 }
 
 void OrchestratorEditorGraphPanel::remove_selected_nodes(bool p_confirm) {
-    Vector<OrchestratorEditorGraphNode*> selected_nodes = get_selected<OrchestratorEditorGraphNode>();
-    if (p_confirm && _is_delete_confirmation_enabled()) {
-        ORCHESTRATOR_CONFIRM(vformat("Do you wish to delete %d node(s)?", selected_nodes.size()),
-            callable_mp_this(remove_selected_nodes).bind(false));
-    }
-
-    for (int i = 0; i < selected_nodes.size(); i++) {
-        OrchestratorEditorGraphNode* node = selected_nodes[i];
-        if (node && node->can_user_delete_node()) {
-            remove_node(node, false);
+    // Resolve the selection to ids up front so the confirmation applies to what the user saw selected.
+    PackedInt64Array node_ids;
+    for (const Ref<OrchestrationGraphNode>& node : _get_selected_model_nodes()) {
+        if (node->can_user_delete_node()) {
+            node_ids.push_back(node->get_id());
         }
     }
+
+    remove_nodes(node_ids, p_confirm);
 }
 
 void OrchestratorEditorGraphPanel::remove_frame(OrchestratorEditorGraphFrame* p_frame, bool p_confirm) {
@@ -3429,27 +3731,12 @@ void OrchestratorEditorGraphPanel::remove_frame(OrchestratorEditorGraphFrame* p_
         ORCHESTRATOR_CONFIRM("Do you wish to delete this frame?", callable_mp_this(remove_frame).bind(p_frame, false));
     }
 
-    if (p_frame->is_selected()) {
-        p_frame->set_selected(false);
-    }
-
-    _detach_node_from_frame(p_frame->get_name());
-
-    p_frame->queue_free();
-
     const Ref<OScriptNodeComment> comment = p_frame->get_comment();
-    if (comment.is_valid()) {
-        _graph->get_orchestration()->remove_node(comment->get_id());
-    }
+    ERR_FAIL_COND_MSG(comment.is_null(), "Frame has no comment node and cannot be removed.");
 
-    if (!_pending_nodes_changed_event) {
-        _set_edited(true);
-        _pending_nodes_changed_event = true;
-        callable_mp_lambda(this, [&] {
-            _pending_nodes_changed_event = false;
-            emit_signal("nodes_changed");
-        }).call_deferred();
-    }
+    // Removing the comment from the orchestration emits "node_removed", and the panel tears down its
+    // visual frame in response, see _node_removed.
+    _graph->get_orchestration()->remove_node(comment->get_id());
 }
 
 OrchestratorEditorGraphNode* OrchestratorEditorGraphPanel::find_node(int p_id) {
@@ -3694,6 +3981,9 @@ void OrchestratorEditorGraphPanel::_bind_methods() {
 
     // Used to notify parent type to focus & edit the function
     ADD_SIGNAL(MethodInfo("edit_function_requested", PropertyInfo(Variant::STRING, "function_name")));
+
+    // Used to notify parent type to spawn the event in an event graph when this panel is not one
+    ADD_SIGNAL(MethodInfo("event_spawn_requested", PropertyInfo(Variant::DICTIONARY, "method")));
 
     ADD_SIGNAL(MethodInfo("breakpoint_changed", PropertyInfo(Variant::INT, "node_id"), PropertyInfo(Variant::BOOL, "enabled")));
     ADD_SIGNAL(MethodInfo("breakpoint_added", PropertyInfo(Variant::INT, "node_id")));

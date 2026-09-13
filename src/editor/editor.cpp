@@ -30,6 +30,7 @@
 #include "editor/actions/registry.h"
 #include "editor/editor_view.h"
 #include "editor/getting_started.h"
+#include "editor/graph/graph_clipboard.h"
 #include "editor/gui/about_dialog.h"
 #include "editor/gui/dialogs_helper.h"
 #include "editor/gui/editor_log_event_router.h"
@@ -342,7 +343,7 @@ void OrchestratorEditor::_menu_option(int p_option) {
                 if (resource.is_valid()) {
                     String path = resource->get_path();
                     if (!path.is_empty()) {
-                        if (ResourceUtils::is_builtin(resource)) {
+                        if (resource->is_built_in()) {
                             path = path.get_slice("::", 0);
                         }
                         EI->get_file_system_dock()->navigate_to_path(path);
@@ -404,7 +405,7 @@ void OrchestratorEditor::_close_tab(int p_idx, bool p_save, bool p_history_back)
     if (current) {
         const Ref<Resource> file = current->get_edited_resource();
         if (p_save && file.is_valid()) {
-            if (!ResourceUtils::is_builtin(file)) {
+            if (!file->is_built_in()) {
                 save_current_script();
             }
         }
@@ -971,7 +972,7 @@ void OrchestratorEditor::_add_callback(Object* p_object, const String& p_functio
             }
         }
 
-        if (!ResourceUtils::is_builtin(script)) {
+        if (!script->is_built_in()) {
             save_current_script();
         }
 
@@ -991,7 +992,7 @@ void OrchestratorEditor::_resave_scripts(const String& p_value) {
         }
 
         const Ref<Resource> resource = view->get_edited_resource();
-        if (ResourceUtils::is_builtin(resource)) {
+        if (resource->is_built_in()) {
             continue;
         }
 
@@ -1010,7 +1011,7 @@ void OrchestratorEditor::_reload_scripts(bool p_refresh_only) {
         }
 
         Ref<Resource> edited_resource = view->get_edited_resource();
-        if (ResourceUtils::is_builtin(edited_resource)) {
+        if (edited_resource->is_built_in()) {
             continue;
         }
 
@@ -1076,7 +1077,7 @@ void OrchestratorEditor::_mark_built_in_scripts_as_saved(const String& p_full_pa
         OrchestratorEditorView* view = cast_to<OrchestratorEditorView>(_tab_container->get_tab_control(i));
         if (view) {
             const Ref<Resource> edited_resource = view->get_edited_resource();
-            if (!ResourceUtils::is_builtin(edited_resource)) {
+            if (!edited_resource->is_built_in()) {
                 continue;
             }
 
@@ -1216,7 +1217,7 @@ bool OrchestratorEditor::_test_script_times_on_disk(const Ref<Resource>& p_for_s
                 continue;
             }
 
-            if (ResourceUtils::is_builtin(edited_resource)) {
+            if (edited_resource->is_built_in()) {
                 continue;
             }
 
@@ -1721,7 +1722,7 @@ void OrchestratorEditor::save_all_scripts() {
             view->apply_code();
         }
 
-        if (!ResourceUtils::is_builtin(edited_resource)) {
+        if (!edited_resource->is_built_in()) {
             Ref<OScript> script = edited_resource;
             if (script.is_valid()) {
                 clear_docs_from_script(script);
@@ -2213,7 +2214,7 @@ void OrchestratorEditor::edit_previous_item() {
 
 void OrchestratorEditor::save_resource(const Ref<Resource>& p_resource) {
     // This is taken from editor_node.cpp and is a scaled down version of what the EditorNode offers.
-    if (ResourceUtils::is_builtin(p_resource)) {
+    if (p_resource->is_built_in()) {
         WARN_PRINT_ED("OrchestratorEditor cannot save built-in resources.");
         return;
     }
@@ -2457,7 +2458,6 @@ void OrchestratorEditor::_notification(int p_what) {
         case NOTIFICATION_LAYOUT_DIRECTION_CHANGED:
         case NOTIFICATION_THEME_CHANGED: {
             _theme_manager->theme_changed();
-            _tab_container->add_theme_stylebox_override(SceneStringName(panel), get_theme_stylebox("ScriptEditor", "EditorStyles"));
 
             _calculate_script_name_button_size();
 
@@ -2473,8 +2473,6 @@ void OrchestratorEditor::_notification(int p_what) {
             break;
         }
         case NOTIFICATION_READY: {
-            add_theme_stylebox_override(SceneStringName(panel), get_theme_stylebox("ScriptEditorPanel", "EditorStyles"));
-
             EditorNode->connect("script_add_function_request", callable_mp_this(_add_callback));
             EditorNode->connect("resource_saved", callable_mp_this(_resource_saved_callback));
 
@@ -2526,6 +2524,11 @@ OrchestratorEditor::OrchestratorEditor(OrchestratorWindowWrapper* p_window_wrapp
     _theme_manager->connect("theme_rebuilt", callable_mp_lambda(this, [this] {
         set_theme(_theme_manager->get_theme());
     }));
+
+    // The builder produces the initial theme synchronously, so the panel style resolves from it
+    // on the first frame rather than falling back to the Godot editor theme.
+    set_theme(_theme_manager->get_theme());
+    set_theme_type_variation("OrchestratorEditorPanel");
 
     add_child(memnew(OrchestratorEditorActionRegistry));
     add_child(memnew(OrchestratorEditorConnectionsDock));
@@ -2580,6 +2583,7 @@ OrchestratorEditor::OrchestratorEditor(OrchestratorWindowWrapper* p_window_wrapp
     _script_split->add_child(editor_container);
 
     _tab_container = memnew(TabContainer);
+    _tab_container->set_theme_type_variation("OrchestratorEditorTabs");
     _tab_container->set_tabs_visible(false);
     _tab_container->set_custom_minimum_size(Size2(200, 0) * EDSCALE);
     _tab_container->set_h_size_flags(SIZE_EXPAND_FILL);
@@ -2779,5 +2783,6 @@ OrchestratorEditor::OrchestratorEditor(OrchestratorWindowWrapper* p_window_wrapp
 }
 
 OrchestratorEditor::~OrchestratorEditor() {
+    OrchestratorEditorGraphClipboard::free_resources();
     memdelete(_theme_manager);
 }

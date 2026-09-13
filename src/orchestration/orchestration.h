@@ -55,6 +55,7 @@ class Orchestration : public Resource {
     GDCLASS(Orchestration, Resource);
 
     friend class OScriptGraph;
+    friend class OScriptFunction;
     friend class OrchestrationBinaryParser;
     friend class OrchestrationTextParser;
     friend class OScriptCache;
@@ -129,6 +130,25 @@ protected:
     /// Fixes any potential orphan nodes in the script
     /// @note This should generally not be an issue, except during development, but its a great sanity check
     virtual void _fix_orphans();
+
+    /// Removes event nodes that share a function with another event node, or whose function no longer
+    /// exists, as written by 2.4.x and 2.5.x.
+    /// @note Ships in 2.4, 2.5 and 2.6; remove once support for 2.4 and 2.5 is dropped.
+    void _fix_duplicate_event_nodes();
+
+    /// Converts legacy graph-declared local variable nodes into function-scoped declarations with
+    /// Get/Set nodes, for files written before format 5. Only function graphs are converted; legacy
+    /// nodes in event graphs are left in place and compile through the legacy handlers.
+    void _upgrade_local_variables();
+
+    /// Replaces a node with a new node of another class that keeps the id, position and size, so that
+    /// connections recorded by id and comment attachments survive. Existing connections are removed.
+    /// @param p_graph the graph that holds the node
+    /// @param p_node the node to replace
+    /// @param p_class the replacement node class
+    /// @param p_context the replacement node initialization context
+    /// @return the replacement node, or an invalid reference if the replacement failed
+    Ref<OScriptNode> _replace_node(const Ref<OScriptGraph>& p_graph, const Ref<OScriptNode>& p_node, const StringName& p_class, const OScriptNodeInitContext& p_context);
 
     /// Get whether there are any instances of this orchestration
     /// @return true if there are existing instances, false otherwise
@@ -293,6 +313,9 @@ public:
     Ref<OScriptFunction> create_function(const MethodInfo& p_method, bool p_user_defined = false);
     Ref<OScriptFunction> create_function(const MethodInfo& p_method, int p_node_id, bool p_user_defined = false);
     Ref<OScriptFunction> duplicate_function(const StringName& p_name, bool p_include_code);
+    Dictionary export_function(const StringName& p_name) const;
+    Ref<OScriptFunction> import_function(const Dictionary& p_data, const StringName& p_name);
+    bool import_function_body(const StringName& p_name, const Dictionary& p_graph_data);
     void remove_function(const StringName& p_name);
     Ref<OScriptFunction> find_function(const StringName& p_name) const;
     Ref<OScriptFunction> find_function(const Guid& p_guid) const;
@@ -314,6 +337,8 @@ public:
     PackedStringArray get_variable_names() const;
     bool can_remove_variable(const StringName& p_name) const;
     Ref<OScriptVariable> promote_to_variable(const Ref<OScriptNodePin>& p_pin);
+    Ref<OScriptVariable> promote_local_variable(const Ref<OScriptFunction>& p_function, const StringName& p_name, bool p_avoid_shadowing = false);
+    PackedStringArray get_functions_shadowing(const StringName& p_name, const Ref<OScriptFunction>& p_exclude) const;
     //~ End Variable Interface
 
     //~ Begin Signals Interface
